@@ -5,11 +5,16 @@
   "private": true,
   "scripts": {
     "dev": "bun run src/main.ts",
+    "create-speech-engine": "bun run scripts/create-speech-engine.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.49.1",
+    "openai": "^6.39.1"
   }
 }
