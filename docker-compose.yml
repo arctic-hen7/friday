@@ -1,0 +1,25 @@
+services:
+  gateway:
+    build:
+      context: ./gateway
+      target: production
+    image: friday-gateway:latest
+    container_name: friday-gateway
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "5000"
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    expose:
+      - "5000"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-friday
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+    depends_on:
+      - gateway
