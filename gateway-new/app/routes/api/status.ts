@@ -1,7 +1,11 @@
+import { getGatewayConfig, jsonResponse } from "~/speechEngine";
+
 export async function loader() {
-    return new Response("OK", {
-        headers: {
-            "Content-Type": "text/plain",
-        },
+    const { llmModel, speechEngineId } = getGatewayConfig();
+
+    return jsonResponse({
+        ok: true,
+        speechEngineId,
+        model: llmModel,
     });
 }

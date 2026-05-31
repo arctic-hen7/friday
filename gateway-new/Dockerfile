@@ -1,22 +1,26 @@
-FROM node:20-alpine AS development-dependencies-env
-COPY . /app
+FROM oven/bun:1.2.19-alpine AS dependencies
 WORKDIR /app
-RUN npm ci
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 
-FROM node:20-alpine AS production-dependencies-env
-COPY ./package.json package-lock.json /app/
+FROM oven/bun:1.2.19-alpine AS build
 WORKDIR /app
-RUN npm ci --omit=dev
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY . .
+RUN bun run build
 
-FROM node:20-alpine AS build-env
-COPY . /app/
-COPY --from=development-dependencies-env /app/node_modules /app/node_modules
+FROM oven/bun:1.2.19-alpine AS production-dependencies
 WORKDIR /app
-RUN npm run build
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
 
-FROM node:20-alpine
-COPY ./package.json package-lock.json /app/
-COPY --from=production-dependencies-env /app/node_modules /app/node_modules
-COPY --from=build-env /app/build /app/build
+FROM oven/bun:1.2.19-alpine
 WORKDIR /app
-CMD ["npm", "run", "start"]
+ENV NODE_ENV=production
+COPY --from=production-dependencies /app/node_modules ./node_modules
+COPY --from=build /app/build ./build
+COPY app/env.ts app/speechEngine.ts ./app/
+COPY package.json index.ts ./
+COPY public ./public
+EXPOSE 5000
+CMD ["bun", "run", "start"]
