@@ -16,10 +16,22 @@ services:
     expose:
       - "5000"
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: cloudflared-friday
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: cloudflared-friday
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+  #   depends_on:
+  #     - gateway
+
+  # TODO: Expose 443 and give Caddy volumes to manage HTTPS too
+  caddy:
+    image: caddy:2
+    container_name: friday-caddy
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
     depends_on:
       - gateway
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro

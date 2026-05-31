@@ -1,0 +1,3 @@
+http://friday.thebrewery.sh {
+  reverse_proxy gateway:5000
+}
