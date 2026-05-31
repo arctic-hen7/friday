@@ -12,6 +12,7 @@
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.49.1",
     "@elevenlabs/react": "^1.6.4",
+    "@google/genai": "^2.7.0",
     "@react-router/express": "7.16.0",
     "@react-router/node": "7.16.0",
     "compression": "1.8.1",

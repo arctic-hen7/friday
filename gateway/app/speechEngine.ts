@@ -1,12 +1,12 @@
 import type { Server as HttpServer } from "node:http";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
 import { optionalEnv, requiredEnv } from "./env";
 
 const SPEECH_ENGINE_WS_PATH = "/api/speech-engine/ws";
 
 let elevenlabs: ElevenLabsClient | undefined;
-let openai: OpenAI | undefined;
+let client: GoogleGenAI | undefined;
 
 function getElevenLabs() {
     elevenlabs ??= new ElevenLabsClient({
@@ -16,18 +16,21 @@ function getElevenLabs() {
     return elevenlabs;
 }
 
-function getOpenAI() {
-    openai ??= new OpenAI({
-        apiKey: requiredEnv("OPENAI_API_KEY"),
+function getVertexClient() {
+    client ??= new GoogleGenAI({
+        enterprise: true,
+        project: requiredEnv("VERTEX_PROJECT"),
+        location: requiredEnv("VERTEX_LOCATION"),
+        // apiKey: requiredEnv("VERTEX_API_KEY"),
     });
 
-    return openai;
+    return client;
 }
 
 export function getGatewayConfig() {
     return {
         speechEngineId: requiredEnv("ELEVENLABS_SPEECH_ENGINE_ID"),
-        llmModel: optionalEnv("OPENAI_MODEL", "gpt-5.4-mini"),
+        llmModel: optionalEnv("VERTEX_MODEL", "gpt-5.4-mini"),
         instructions: optionalEnv(
             "AGENT_INSTRUCTIONS",
             "You are a concise, helpful voice agent. Keep answers conversational and short unless the user asks for detail.",
@@ -76,20 +79,24 @@ export function attachSpeechEngine(server: HttpServer) {
         },
 
         async onTranscript(transcript, signal, session) {
-            const response = await getOpenAI().responses.create(
+            console.log("Received transcript")
+            const response = await getVertexClient().models.generateContent(
                 {
                     model: llmModel,
-                    instructions,
-                    input: transcript.map(message => ({
+                    contents: transcript.map(message => ({
                         role: message.role === "agent" ? "assistant" : "user",
-                        content: message.content,
+                        text: message.content,
                     })),
-                    stream: true,
+                    config: {
+                        systemInstruction: instructions,
+                        abortSignal: signal,
+                    }
                 },
-                { signal },
             );
+            console.log("Response ready")
 
-            await session.sendResponse(response);
+            await session.sendResponse(response.text as string);
+            console.log("Response sent")
         },
 
         onClose(session) {
