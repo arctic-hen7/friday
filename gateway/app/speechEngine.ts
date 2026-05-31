@@ -90,6 +90,10 @@ export function attachSpeechEngine(server: HttpServer) {
                     config: {
                         systemInstruction: instructions,
                         abortSignal: signal,
+                        thinkingConfig: {
+                            thinkingBudget: 0,
+                            includeThoughts: false,
+                        },
                     }
                 },
             );
