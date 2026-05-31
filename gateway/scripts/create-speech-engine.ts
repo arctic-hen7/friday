@@ -1,8 +1,7 @@
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import type { ElevenLabs } from "@elevenlabs/elevenlabs-js";
-import { loadRootEnv, optionalEnv, requiredEnv } from "../src/env";
-
-loadRootEnv();
+import { optionalEnv, requiredEnv } from "../app/env";
+import { SPEECH_ENGINE_WS_PATH } from "../app/speechEngine";
 
 type CliOptions = {
     name?: string;
@@ -69,7 +68,7 @@ function defaultWsUrl() {
         throw new Error("Set PUBLIC_GATEWAY_URL or pass --ws-url");
     }
 
-    return `${publicBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/api/speech-engine/ws`;
+    return `${publicBaseUrl.replace(/^http/, "ws").replace(/\/$/, "")}${SPEECH_ENGINE_WS_PATH}`;
 }
 
 const options = parseArgs(Bun.argv.slice(2));
