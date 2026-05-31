@@ -80,7 +80,7 @@ export function attachSpeechEngine(server: HttpServer) {
 
         async onTranscript(transcript, signal, session) {
             console.log("Received transcript")
-            const response = await getVertexClient().models.generateContent(
+            const response = await getVertexClient().models.generateContentStream(
                 {
                     model: llmModel,
                     contents: transcript.map(message => ({
@@ -99,7 +99,7 @@ export function attachSpeechEngine(server: HttpServer) {
             );
             console.log("Response ready")
 
-            await session.sendResponse(response.text as string);
+            await session.sendResponse(response);
             console.log("Response sent")
         },
 
