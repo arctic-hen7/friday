@@ -9,6 +9,7 @@ type CliOptions = {
     wsUrl?: string;
     engineId?: string;
     voiceId?: string;
+    voiceSpeed?: string;
     language?: string;
 };
 
@@ -47,6 +48,9 @@ function parseArgs(argv: string[]) {
             case "voice-id":
                 options.voiceId = value;
                 break;
+            case "voice-speed":
+                options.voiceSpeed = value;
+                break;
             case "language":
                 options.language = value;
                 break;
@@ -72,6 +76,11 @@ const options = parseArgs(Bun.argv.slice(2));
 const elevenlabs = new ElevenLabsClient({
     apiKey: requiredEnv("ELEVENLABS_API_KEY"),
 });
+const voiceSpeed = Number(options.voiceSpeed || optionalEnv("ELEVENLABS_VOICE_SPEED", "1.05"));
+
+if (!Number.isFinite(voiceSpeed) || voiceSpeed <= 0) {
+    throw new Error("Voice speed must be a positive number");
+}
 
 const payload: ElevenLabs.CreateSpeechEngineRequest = {
     name: options.name || optionalEnv("SPEECH_ENGINE_NAME", "Friday Voice Agent"),
@@ -80,10 +89,18 @@ const payload: ElevenLabs.CreateSpeechEngineRequest = {
     },
     tts: {
         voiceId: options.voiceId || optionalEnv("ELEVENLABS_VOICE_ID") || undefined,
+        speed: voiceSpeed,
     },
     language: options.language || optionalEnv("SPEECH_ENGINE_LANGUAGE", "en"),
     conversation: {
-        clientEvents: ["user_transcript", "agent_response", "interruption", "vad_score"],
+        clientEvents: [
+            "audio",
+            "user_transcript",
+            "agent_response",
+            "agent_response_complete",
+            "interruption",
+            "vad_score",
+        ],
     },
 };
 

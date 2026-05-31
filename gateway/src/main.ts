@@ -112,7 +112,7 @@ elevenlabs.speechEngine.attach(speechEngineId, server, "/api/speech-engine/ws", 
             { signal },
         );
 
-        session.sendResponse(response);
+        await session.sendResponse(response);
     },
 
     onClose(session) {

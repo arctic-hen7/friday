@@ -17,6 +17,14 @@ type MessagePayload = {
 
 const gatewayUrl = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5000'
 
+async function requestMicrophoneAccess() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+    for (const track of stream.getTracks()) {
+        track.stop()
+    }
+}
+
 async function getConversationToken() {
     const response = await fetch(`${gatewayUrl}/api/conversation-token`, {
         method: 'POST',
@@ -82,6 +90,7 @@ function VoiceAgent() {
     async function startConversation() {
         try {
             setError(undefined)
+            await requestMicrophoneAccess()
             const token = await getConversationToken()
 
             conversation.startSession({
