@@ -37,6 +37,8 @@ export type VoiceAgentState = {
     conversationId?: string;
     error?: string;
     transcript: TranscriptMessage[];
+    getInputVolume: () => number;
+    getOutputVolume: () => number;
 };
 
 type ConversationStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -102,11 +104,14 @@ function getErrorMessage(error: unknown) {
 
 function getControlState(
     status: ConversationStatus,
+    isStarting: boolean,
     isMuted: boolean,
     isSpeaking: boolean,
     isProcessing: boolean,
 ): VoiceControlState {
-    if (status === "connecting") {
+    // local "starting" flag covers the gap between tap and the SDK actually
+    // entering its connecting state — keeps UI feedback instant
+    if (isStarting || status === "connecting") {
         return "connecting";
     }
 
@@ -178,6 +183,7 @@ export function useVoiceAgent(): VoiceAgentState {
     const [error, setError] = useState<string>();
     const [conversationId, setConversationId] = useState<string>();
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isStarting, setIsStarting] = useState(false);
     const heardSpeechRef = useRef(false);
     const pressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const processingTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -200,14 +206,17 @@ export function useVoiceAgent(): VoiceAgentState {
         onConnect: ({ conversationId }) => {
             setConversationId(conversationId);
             setError(undefined);
+            setIsStarting(false);
             resetProcessingState();
         },
         onDisconnect: () => {
             setConversationId(undefined);
+            setIsStarting(false);
             resetProcessingState();
         },
         onError: message => {
             setError(message);
+            setIsStarting(false);
             resetProcessingState();
         },
         onMessage: (payload: MessagePayload) => {
@@ -274,8 +283,8 @@ export function useVoiceAgent(): VoiceAgentState {
     }, []);
 
     const controlState = useMemo(
-        () => getControlState(conversation.status, conversation.isMuted, conversation.isSpeaking, isProcessing),
-        [conversation.isMuted, conversation.isSpeaking, conversation.status, isProcessing],
+        () => getControlState(conversation.status, isStarting, conversation.isMuted, conversation.isSpeaking, isProcessing),
+        [conversation.isMuted, conversation.isSpeaking, conversation.status, isProcessing, isStarting],
     );
     const copy = useMemo(() => getControlCopy(controlState), [controlState]);
     const transcript = useMemo(() => messages.slice(-TRANSCRIPT_LIMIT), [messages]);
@@ -283,6 +292,8 @@ export function useVoiceAgent(): VoiceAgentState {
     async function startConversation() {
         try {
             setError(undefined);
+            setMessages([]); // fresh transcript each new chat
+            setIsStarting(true);
             resetProcessingState();
             await requestMicrophoneAccess();
             const token = await getConversationToken();
@@ -292,6 +303,7 @@ export function useVoiceAgent(): VoiceAgentState {
                 connectionType: "webrtc",
             });
         } catch (error) {
+            setIsStarting(false);
             setError(getErrorMessage(error));
         }
     }
@@ -367,5 +379,7 @@ export function useVoiceAgent(): VoiceAgentState {
         conversationId,
         error,
         transcript,
+        getInputVolume: conversation.getInputVolume,
+        getOutputVolume: conversation.getOutputVolume,
     };
 }

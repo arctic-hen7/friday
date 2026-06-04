@@ -53,7 +53,7 @@ function formatStamp(ms: number) {
 }
 
 function VoiceAgent() {
-    const { control, error, transcript } = useVoiceAgent();
+    const { control, error, transcript, getInputVolume, getOutputVolume } = useVoiceAgent();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const orbRef = useRef<Orb | null>(null);
     const railBodyRef = useRef<HTMLDivElement | null>(null);
@@ -86,6 +86,27 @@ function VoiceAgent() {
     useEffect(() => {
         orbRef.current?.setState(ORB_STATE[control.state]);
     }, [control.state]);
+
+    // feed mic / agent volume into the orb so particles bounce with the audio.
+    // input volume drives the orb while the user is talking; output volume while Friday is.
+    useEffect(() => {
+        const orb = orbRef.current;
+        if (!orb || !live) {
+            orb?.setAmplitude(0);
+            return;
+        }
+        let raf = 0;
+        const tick = () => {
+            let v = 0;
+            if (control.state === "speaking") v = getOutputVolume();
+            else if (control.state === "listening") v = getInputVolume();
+            // muted / processing leave amplitude at 0 — state's base energy still animates the orb
+            orb.setAmplitude(Number.isFinite(v) ? v : 0);
+            raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+    }, [live, control.state, getInputVolume, getOutputVolume]);
 
     // visual hold-to-end progress — voiceAgent.ts owns the actual end timer,
     // we just mirror the press window onto the ring for feedback.

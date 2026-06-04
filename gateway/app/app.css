@@ -196,6 +196,12 @@ button:focus-visible {
     height: 100%;
     display: block;
     pointer-events: none;
+    /* the halo paints with `lighter` over the whole canvas; outside its outer radius
+       the alpha is ~0 but at the canvas's straight edges the gradient still leaves
+       a faint tint, reading as a square. Mask the canvas to a circle so that any
+       residual tint fades to the background continuously instead of along a rect. */
+    -webkit-mask-image: radial-gradient(circle at center, #000 55%, transparent 92%);
+    mask-image: radial-gradient(circle at center, #000 55%, transparent 92%);
 }
 
 .orb-hit {

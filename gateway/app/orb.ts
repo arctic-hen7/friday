@@ -316,8 +316,10 @@ export class Orb {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // ambient halo
-        const halo = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 2.6);
+        // ambient halo — outer radius kept inside the canvas's inscribed circle
+        // (~R*2.36 ≈ canvas corner) so the fade-to-zero completes before the corners
+        // and the panel doesn't read as a tinted square against the body background
+        const halo = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 2.3);
         let gc = hexToRgb(glowHex);
         // tinted states (e.g. error) push the halo toward the tint color for a coherent look
         if (this.tgt.tint) {
