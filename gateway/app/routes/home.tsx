@@ -1,117 +1,259 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "./+types/home";
 import { ConversationProvider } from "@elevenlabs/react";
-import { useVoiceAgent } from "../voiceAgent";
+import { useVoiceAgent, type VoiceControlState } from "../voiceAgent";
+import { Orb, PALETTES, type OrbRing, type OrbState } from "../orb";
 
 export function meta({ }: Route.MetaArgs) {
     return [
-        { title: "Friday Voice Agent" },
+        { title: "Friday — Voice Gateway" },
         { name: "description", content: "Friday voice agent gateway and client" },
     ];
 }
 
+const HOLD_MS = 850;
+const PALETTE = "spectra";
+
+type StatusDot = "off" | "warn" | "err" | "live" | "muted";
+
+type StatusCopy = {
+    label: string;
+    hint: string;
+    chip: string;
+    dot: StatusDot;
+};
+
+const STATUS_COPY: Record<VoiceControlState, StatusCopy> = {
+    idle:       { label: "Tap to connect",     hint: "Start a voice session with Friday", chip: "Offline",    dot: "off"   },
+    connecting: { label: "Connecting",         hint: "Securing a live channel…",          chip: "Connecting", dot: "warn"  },
+    error:      { label: "Couldn't connect",   hint: "Tap to try again",                  chip: "No signal",  dot: "err"   },
+    listening:  { label: "Listening",          hint: "Hold to end · tap to mute",         chip: "Live",       dot: "live"  },
+    processing: { label: "Thinking",           hint: "Hold to end",                       chip: "Live",       dot: "live"  },
+    speaking:   { label: "Friday is speaking", hint: "Hold to end · tap to mute",         chip: "Live",       dot: "live"  },
+    muted:      { label: "Muted",              hint: "Tap to unmute · hold to end",       chip: "Muted",      dot: "muted" },
+};
+
+const ORB_STATE: Record<VoiceControlState, OrbState> = {
+    idle:       "idle",
+    connecting: "connecting",
+    error:      "error",
+    listening:  "listening",
+    processing: "processing",
+    speaking:   "responding",
+    muted:      "muted",
+};
+
+const LIVE_STATES = new Set<VoiceControlState>(["listening", "processing", "speaking", "muted"]);
+
+function formatStamp(ms: number) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const m = String(Math.floor(total / 60)).padStart(2, "0");
+    const s = String(total % 60).padStart(2, "0");
+    return `${m}:${s}`;
+}
+
 function VoiceAgent() {
-    const { control, conversationId, error, transcript } = useVoiceAgent();
+    const { control, error, transcript } = useVoiceAgent();
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const orbRef = useRef<Orb | null>(null);
+    const railBodyRef = useRef<HTMLDivElement | null>(null);
+
+    const status = STATUS_COPY[control.state];
+    const live = LIVE_STATES.has(control.state);
+
+    // boot the orb once, drive it from React state thereafter
+    useEffect(() => {
+        if (!canvasRef.current || orbRef.current) return;
+        const orb = new Orb(canvasRef.current, {
+            palette: PALETTE,
+            count: 880,
+            seed: 7.7,
+            motion: { spin: 1.8, flow: 0.65, wander: 1.2 },
+        });
+        orb.setState("idle");
+        orb.start();
+        orbRef.current = orb;
+
+        const glow = PALETTES[PALETTE]?.glow;
+        if (glow) document.documentElement.style.setProperty("--accent", glow);
+
+        return () => {
+            orb.destroy();
+            orbRef.current = null;
+        };
+    }, []);
+
+    useEffect(() => {
+        orbRef.current?.setState(ORB_STATE[control.state]);
+    }, [control.state]);
+
+    // visual hold-to-end progress — voiceAgent.ts owns the actual end timer,
+    // we just mirror the press window onto the ring for feedback.
+    const [holdProgress, setHoldProgress] = useState<number | null>(null);
+    const holdRafRef = useRef<number | null>(null);
+
+    function clearHoldRaf() {
+        if (holdRafRef.current !== null) {
+            cancelAnimationFrame(holdRafRef.current);
+            holdRafRef.current = null;
+        }
+    }
+
+    function beginHoldRing() {
+        // only show ring while a session is in progress (matches voiceAgent's long-press scope)
+        if (!live) return;
+        const started = performance.now();
+        const step = () => {
+            const p = Math.min(1, (performance.now() - started) / HOLD_MS);
+            setHoldProgress(p);
+            if (p < 1) holdRafRef.current = requestAnimationFrame(step);
+        };
+        holdRafRef.current = requestAnimationFrame(step);
+    }
+
+    function endHoldRing() {
+        clearHoldRaf();
+        setHoldProgress(null);
+    }
+
+    useEffect(() => () => clearHoldRaf(), []);
+
+    useEffect(() => {
+        const orb = orbRef.current;
+        if (!orb) return;
+        let ring: OrbRing | null;
+        if (holdProgress !== null) ring = { mode: "progress", p: holdProgress };
+        else if (control.state === "connecting") ring = { mode: "sweep" };
+        else ring = null;
+        orb.setRing(ring);
+    }, [holdProgress, control.state]);
+
+    // session timer — runs while in any live state
+    const [elapsed, setElapsed] = useState(0);
+    const startRef = useRef<number | null>(null);
+    useEffect(() => {
+        if (!live) {
+            startRef.current = null;
+            setElapsed(0);
+            return;
+        }
+        if (startRef.current === null) startRef.current = Date.now();
+        const id = setInterval(() => {
+            if (startRef.current !== null) setElapsed(Date.now() - startRef.current);
+        }, 500);
+        return () => clearInterval(id);
+    }, [live]);
+
+    // stable per-message timestamp, relative to session start
+    const stampsRef = useRef<Map<string, string>>(new Map());
+    useEffect(() => {
+        if (!live) stampsRef.current.clear();
+    }, [live]);
+
+    const transcriptWithStamps = useMemo(() => {
+        const stamps = stampsRef.current;
+        const sessionStart = startRef.current;
+        return transcript.map(m => {
+            let stamp = stamps.get(m.id);
+            if (!stamp) {
+                stamp = formatStamp(sessionStart ? Date.now() - sessionStart : 0);
+                stamps.set(m.id, stamp);
+            }
+            return { ...m, stamp };
+        });
+    }, [transcript]);
+
+    useEffect(() => {
+        const el = railBodyRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+    }, [transcriptWithStamps.length]);
+
+    const lastMessage = transcriptWithStamps[transcriptWithStamps.length - 1];
+    const micNote =
+        control.state === "muted"
+            ? "Microphone muted"
+            : live
+                ? "Microphone live"
+                : "Microphone idle";
+
+    const handlers = control.buttonHandlers;
 
     return (
-        <main className="min-h-svh overflow-hidden bg-[#090b0d] text-zinc-100">
-            <section className="grid min-h-svh lg:grid-cols-[minmax(0,1fr)_23rem]">
-                <div className="relative flex min-h-svh flex-col px-5 py-5 sm:px-8 lg:px-12">
-                    <header className="flex items-center justify-between gap-4">
-                        <div>
-                            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">
-                                Friday
-                            </p>
-                            <h1 className="mt-2 text-xl font-semibold text-white sm:text-2xl">
-                                Voice gateway
-                            </h1>
-                        </div>
-                        <div
-                            className={`status-pill status-pill-${control.state}`}
-                            aria-label={`Session status: ${control.copy.title}`}
-                        >
-                            <span />
-                            {control.copy.title}
-                        </div>
-                    </header>
-
-                    <div className="flex flex-1 items-center justify-center py-10">
-                        <div className="w-full max-w-sm text-center sm:max-w-md">
-                            <div className="relative mx-auto flex aspect-square w-[min(72vw,18rem)] items-center justify-center sm:w-80">
-                                <div className={`ambient-ring ambient-ring-${control.state}`} />
-                                {control.isConnecting ? <div className="connection-spinner" /> : null}
-                                <button
-                                    className={`voice-button voice-button-${control.state}`}
-                                    type="button"
-                                    aria-label={control.copy.detail}
-                                    aria-busy={control.isConnecting}
-                                    {...control.buttonHandlers}
-                                >
-                                    <span className="voice-button-content">
-                                        <span className="voice-button-title">{control.copy.title}</span>
-                                        {control.showWave ? (
-                                            <span className={`voice-wave voice-wave-${control.state}`} aria-hidden="true">
-                                                <span />
-                                                <span />
-                                                <span />
-                                                <span />
-                                                <span />
-                                            </span>
-                                        ) : null}
-                                    </span>
-                                </button>
-                            </div>
-
-                            <p className="mx-auto mt-6 min-h-12 max-w-xs text-balance text-sm leading-6 text-zinc-400 sm:max-w-sm">
-                                {control.copy.detail}
-                            </p>
-
-                            {error ? (
-                                <div className="mx-auto mt-4 max-w-sm rounded-md border border-red-500/30 bg-red-950/70 px-4 py-3 text-left text-sm leading-6 text-red-100">
-                                    {error}
-                                </div>
-                            ) : null}
-
-                            {conversationId ? (
-                                <p className="mx-auto mt-4 max-w-xs truncate font-mono text-[0.7rem] text-zinc-600 sm:max-w-sm">
-                                    {conversationId}
-                                </p>
-                            ) : null}
-                        </div>
-                    </div>
+        <div className="app">
+            <header className="topbar">
+                <div className="brand">
+                    <span className="brand-dot" />
+                    FRIDAY
                 </div>
+                <div className={`status-chip dot-${status.dot}`}>
+                    <span className="chip-text">{status.chip}</span>
+                </div>
+            </header>
 
-                <aside className="hidden min-h-svh border-l border-white/10 bg-[#101318] lg:flex lg:flex-col">
-                    <div className="border-b border-white/10 px-5 py-5">
-                        <h2 className="text-sm font-semibold text-white">Transcript</h2>
-                        <p className="mt-1 text-xs text-zinc-500">Desktop session view</p>
+            <div className="row">
+                <main className="stage">
+                    <div className="orb-wrap">
+                        <canvas ref={canvasRef} className="orb-canvas" />
+                        <button
+                            type="button"
+                            className="orb-hit"
+                            aria-label="Voice control — tap to connect or mute; hold to end"
+                            aria-busy={control.isConnecting}
+                            onClick={handlers.onClick}
+                            onPointerDown={e => { handlers.onPointerDown?.(e); beginHoldRing(); }}
+                            onPointerUp={e => { handlers.onPointerUp?.(e); endHoldRing(); }}
+                            onPointerCancel={e => { handlers.onPointerCancel?.(e); endHoldRing(); }}
+                            onPointerLeave={e => { handlers.onPointerLeave?.(e); endHoldRing(); }}
+                        />
                     </div>
 
-                    <div className="flex-1 space-y-3 overflow-y-auto px-4 py-5">
-                        {transcript.length === 0 ? (
-                            <div className="flex h-full items-center justify-center px-4 text-center text-sm leading-6 text-zinc-500">
-                                Transcript appears here after the session starts.
+                    <div className="readout">
+                        <div className="status-label">{status.label}</div>
+                        <div className="status-hint">{status.hint}</div>
+                    </div>
+
+                    {error ? <div className="error-panel">{error}</div> : null}
+
+                    {lastMessage ? (
+                        <div className="caption">
+                            <span className="cap-who">{lastMessage.role === "agent" ? "Friday" : "You"}</span>
+                            <span className="cap-text">{lastMessage.message}</span>
+                        </div>
+                    ) : null}
+                </main>
+
+                <aside className="rail">
+                    <div className="rail-head">
+                        <span className="rail-title">Transcript</span>
+                        <span className="rail-timer">{formatStamp(elapsed)}</span>
+                    </div>
+                    <div className="rail-body" ref={railBodyRef}>
+                        {transcriptWithStamps.length === 0 ? (
+                            <div className="rail-empty">
+                                No session yet. Tap the orb to connect and start talking with Friday.
                             </div>
                         ) : (
-                            transcript.map(message => (
-                                <article
-                                    key={message.id}
-                                    className={`rounded-md px-3 py-2 text-sm leading-6 ${
-                                        message.role === "user"
-                                            ? "ml-8 bg-emerald-400 text-zinc-950"
-                                            : "mr-8 bg-zinc-800 text-zinc-100"
-                                    }`}
+                            transcriptWithStamps.map(m => (
+                                <div
+                                    key={m.id}
+                                    className={`line ${m.role === "agent" ? "line-friday" : "line-you"}`}
                                 >
-                                    <p className="mb-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] opacity-70">
-                                        {message.role === "user" ? "You" : "Friday"}
-                                    </p>
-                                    {message.message}
-                                </article>
+                                    <span className="line-time">{m.stamp}</span>
+                                    <div className="line-body">
+                                        <span className="line-who">{m.role === "agent" ? "Friday" : "You"}</span>
+                                        <p className="line-text">{m.message}</p>
+                                    </div>
+                                </div>
                             ))
                         )}
                     </div>
+                    <div className="rail-foot">
+                        <span className="mic-i" />
+                        <span>{micNote}</span>
+                    </div>
                 </aside>
-            </section>
-        </main>
+            </div>
+        </div>
     );
 }
 
