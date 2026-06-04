@@ -189,7 +189,6 @@ function VoiceAgent() {
         if (el) el.scrollTop = el.scrollHeight;
     }, [transcriptWithStamps.length]);
 
-    const lastMessage = transcriptWithStamps[transcriptWithStamps.length - 1];
     const micNote =
         control.state === "muted"
             ? "Microphone muted"
@@ -234,13 +233,6 @@ function VoiceAgent() {
                     </div>
 
                     {error ? <div className="error-panel">{error}</div> : null}
-
-                    {lastMessage ? (
-                        <div className="caption">
-                            <span className="cap-who">{lastMessage.role === "agent" ? "Friday" : "You"}</span>
-                            <span className="cap-text">{lastMessage.message}</span>
-                        </div>
-                    ) : null}
                 </main>
 
                 <aside className="rail">

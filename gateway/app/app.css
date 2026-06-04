@@ -257,34 +257,6 @@ button:focus-visible {
     text-align: left;
 }
 
-/* mobile caption — last transcript line, surfaced below the orb */
-.caption {
-    position: absolute;
-    left: 24px;
-    right: 24px;
-    bottom: 26px;
-    display: none;
-    flex-direction: column;
-    gap: 5px;
-    text-align: center;
-    opacity: 1;
-}
-
-.cap-who {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--accent);
-}
-
-.cap-text {
-    font-size: 15px;
-    line-height: 1.45;
-    color: var(--ink);
-    text-wrap: pretty;
-}
-
 /* transcript rail --------------------------------------------------------- */
 .rail {
     flex: 0 0 360px;
@@ -421,16 +393,25 @@ button:focus-visible {
         display: none;
     }
 
-    .caption {
-        display: flex;
+    .topbar {
+        padding: 16px 18px;
+    }
+
+    .orb-wrap {
+        width: min(86vw, 420px);
     }
 
     .readout {
-        margin-top: 34px;
+        margin-top: 28px;
     }
 
-    .topbar {
-        padding: 16px 18px;
+    .status-label {
+        font-size: 18px;
+    }
+
+    .status-hint {
+        font-size: 12px;
+        margin-top: 7px;
     }
 }
 
