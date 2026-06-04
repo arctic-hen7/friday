@@ -19,9 +19,11 @@ function getElevenLabs() {
 function getVertexClient() {
     client ??= new GoogleGenAI({
         enterprise: true,
-        project: requiredEnv("VERTEX_PROJECT"),
-        location: requiredEnv("VERTEX_LOCATION"),
-        // apiKey: requiredEnv("VERTEX_API_KEY"),
+        // In production, use ADC and specify the project/location
+        project: process.env.NODE_ENV == "production" ? requiredEnv("VERTEX_PROJECT") : undefined,
+        location: process.env.NODE_ENV == "production" ? requiredEnv("VERTEX_LOCATION") : undefined,
+        // In development, use the API key to avoid ADC semantics
+        apiKey: process.env.NODE_ENV == "production" ? undefined : requiredEnv("VERTEX_API_KEY"),
     });
 
     return client;
@@ -79,7 +81,6 @@ export function attachSpeechEngine(server: HttpServer) {
         },
 
         async onTranscript(transcript, signal, session) {
-            console.log("Received transcript")
             const response = await getVertexClient().models.generateContentStream(
                 {
                     model: llmModel,
@@ -97,10 +98,8 @@ export function attachSpeechEngine(server: HttpServer) {
                     }
                 },
             );
-            console.log("Response ready")
 
             await session.sendResponse(response);
-            console.log("Response sent")
         },
 
         onClose(session) {

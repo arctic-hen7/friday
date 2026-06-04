@@ -2,7 +2,7 @@ import type { Route } from "./+types/home";
 import { useMemo, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 
-export function meta({}: Route.MetaArgs) {
+export function meta({ }: Route.MetaArgs) {
     return [
         { title: "Friday Voice Agent" },
         { name: "description", content: "Friday voice agent gateway and client" },
@@ -120,9 +120,8 @@ function VoiceAgent() {
                     </div>
                     <div className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm">
                         <span
-                            className={`h-2.5 w-2.5 rounded-full ${
-                                conversation.status === "connected" ? "bg-emerald-400" : "bg-zinc-500"
-                            }`}
+                            className={`h-2.5 w-2.5 rounded-full ${conversation.status === "connected" ? "bg-emerald-400" : "bg-zinc-500"
+                                }`}
                         />
                         {status}
                     </div>
@@ -148,11 +147,10 @@ function VoiceAgent() {
                                 messages.map(message => (
                                     <article
                                         key={message.id}
-                                        className={`max-w-[82%] rounded-md px-3 py-2 text-sm leading-6 ${
-                                            message.role === "user"
+                                        className={`max-w-[82%] rounded-md px-3 py-2 text-sm leading-6 ${message.role === "user"
                                                 ? "ml-auto bg-emerald-500 text-zinc-950"
                                                 : "bg-zinc-800 text-zinc-100"
-                                        }`}
+                                            }`}
                                     >
                                         {message.message}
                                     </article>
