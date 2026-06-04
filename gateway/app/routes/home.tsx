@@ -1,5 +1,5 @@
 import type { Route } from "./+types/home";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 
 export function meta({ }: Route.MetaArgs) {
@@ -16,12 +16,21 @@ type TranscriptMessage = {
 };
 
 type ConversationStatus = "disconnected" | "connecting" | "connected" | "error";
+type ControlState = "idle" | "connecting" | "listening" | "processing" | "speaking" | "muted" | "error";
 
 type MessagePayload = {
     message: string;
     event_id?: number;
     role: "user" | "agent";
 };
+
+type VadScorePayload = {
+    vadScore: number;
+};
+
+const VAD_SPEECH_THRESHOLD = 0.45;
+const VAD_SILENCE_THRESHOLD = 0.2;
+const VAD_PROCESSING_DELAY_MS = 450;
 
 async function requestMicrophoneAccess() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -49,16 +58,92 @@ async function getConversationToken() {
     return data.token;
 }
 
-function statusLabel(status: ConversationStatus) {
-    switch (status) {
-        case "connected":
-            return "Live";
+function getErrorMessage(error: unknown) {
+    if (error instanceof DOMException && error.name === "NotAllowedError") {
+        return "Microphone permission was denied. Allow microphone access in your browser settings and try again.";
+    }
+
+    if (error instanceof DOMException && error.name === "NotFoundError") {
+        return "No microphone was found. Connect a microphone and try again.";
+    }
+
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return String(error);
+}
+
+function getControlState(
+    status: ConversationStatus,
+    isMuted: boolean,
+    isSpeaking: boolean,
+    isProcessing: boolean,
+): ControlState {
+    if (status === "connecting") {
+        return "connecting";
+    }
+
+    if (status === "error") {
+        return "error";
+    }
+
+    if (status !== "connected") {
+        return "idle";
+    }
+
+    if (isMuted) {
+        return "muted";
+    }
+
+    if (isSpeaking) {
+        return "speaking";
+    }
+
+    if (isProcessing) {
+        return "processing";
+    }
+
+    return "listening";
+}
+
+function controlCopy(controlState: ControlState) {
+    switch (controlState) {
         case "connecting":
-            return "Connecting";
+            return {
+                title: "Connecting",
+                detail: "Opening the microphone and joining the voice session",
+            };
+        case "listening":
+            return {
+                title: "Listening",
+                detail: "Tap to mute. Hold to end.",
+            };
+        case "processing":
+            return {
+                title: "Processing",
+                detail: "Friday is working on your last message",
+            };
+        case "speaking":
+            return {
+                title: "Speaking",
+                detail: "Cut in anytime. Tap to mute, hold to end.",
+            };
+        case "muted":
+            return {
+                title: "Muted",
+                detail: "Tap to unmute. Hold to end.",
+            };
         case "error":
-            return "Error";
+            return {
+                title: "Try again",
+                detail: "Tap after fixing the issue below",
+            };
         default:
-            return "Idle";
+            return {
+                title: "Start",
+                detail: "Tap to talk with Friday",
+            };
     }
 }
 
@@ -66,19 +151,44 @@ function VoiceAgent() {
     const [messages, setMessages] = useState<TranscriptMessage[]>([]);
     const [error, setError] = useState<string>();
     const [conversationId, setConversationId] = useState<string>();
+    const [isProcessing, setIsProcessing] = useState(false);
+    const heardSpeechRef = useRef(false);
+    const pressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const processingTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const longPressTriggeredRef = useRef(false);
+
+    function clearProcessingTimer() {
+        if (processingTimerRef.current) {
+            clearTimeout(processingTimerRef.current);
+            processingTimerRef.current = undefined;
+        }
+    }
+
+    function resetProcessingState() {
+        clearProcessingTimer();
+        heardSpeechRef.current = false;
+        setIsProcessing(false);
+    }
 
     const conversation = useConversation({
         onConnect: ({ conversationId }) => {
             setConversationId(conversationId);
             setError(undefined);
+            resetProcessingState();
         },
         onDisconnect: () => {
             setConversationId(undefined);
+            resetProcessingState();
         },
         onError: message => {
             setError(message);
+            resetProcessingState();
         },
         onMessage: (payload: MessagePayload) => {
+            if (payload.role === "agent") {
+                setIsProcessing(false);
+            }
+
             setMessages(current => [
                 ...current,
                 {
@@ -88,14 +198,66 @@ function VoiceAgent() {
                 },
             ]);
         },
+        onModeChange: ({ mode }) => {
+            if (mode === "speaking") {
+                setIsProcessing(false);
+            }
+        },
+        onInterruption: () => {
+            resetProcessingState();
+        },
+        onVadScore: ({ vadScore }: VadScorePayload) => {
+            if (vadScore >= VAD_SPEECH_THRESHOLD) {
+                clearProcessingTimer();
+                heardSpeechRef.current = true;
+                setIsProcessing(false);
+                return;
+            }
+
+            if (!heardSpeechRef.current) {
+                return;
+            }
+
+            if (vadScore > VAD_SILENCE_THRESHOLD) {
+                clearProcessingTimer();
+                return;
+            }
+
+            if (processingTimerRef.current || isProcessing) {
+                return;
+            }
+
+            processingTimerRef.current = setTimeout(() => {
+                processingTimerRef.current = undefined;
+                setIsProcessing(true);
+            }, VAD_PROCESSING_DELAY_MS);
+        },
     });
 
-    const isActive = conversation.status === "connected" || conversation.status === "connecting";
-    const status = useMemo(() => statusLabel(conversation.status), [conversation.status]);
+    useEffect(() => {
+        if (conversation.status !== "connected" || conversation.isMuted || conversation.isSpeaking) {
+            resetProcessingState();
+        }
+    }, [conversation.isMuted, conversation.isSpeaking, conversation.status]);
+
+    useEffect(() => {
+        return () => {
+            clearLongPressTimer();
+            clearProcessingTimer();
+        };
+    }, []);
+
+    const controlState = useMemo(
+        () => getControlState(conversation.status, conversation.isMuted, conversation.isSpeaking, isProcessing),
+        [conversation.isMuted, conversation.isSpeaking, conversation.status, isProcessing],
+    );
+    const copy = useMemo(() => controlCopy(controlState), [controlState]);
+    const transcriptMessages = useMemo(() => messages.slice(-18), [messages]);
 
     async function startConversation() {
         try {
             setError(undefined);
+            resetProcessingState();
             await requestMicrophoneAccess();
             const token = await getConversationToken();
 
@@ -104,104 +266,166 @@ function VoiceAgent() {
                 connectionType: "webrtc",
             });
         } catch (error) {
-            setError(error instanceof Error ? error.message : String(error));
+            setError(getErrorMessage(error));
         }
     }
 
-    return (
-        <main className="min-h-svh bg-zinc-950 text-zinc-100">
-            <section className="mx-auto flex min-h-svh w-full max-w-5xl flex-col px-5 py-5 sm:px-8">
-                <header className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 pb-4">
-                    <div>
-                        <p className="text-sm font-medium text-emerald-300">Speech Engine prototype</p>
-                        <h1 className="mt-1 text-2xl font-semibold tracking-normal text-white sm:text-3xl">
-                            Friday voice agent
-                        </h1>
-                    </div>
-                    <div className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm">
-                        <span
-                            className={`h-2.5 w-2.5 rounded-full ${conversation.status === "connected" ? "bg-emerald-400" : "bg-zinc-500"
-                                }`}
-                        />
-                        {status}
-                    </div>
-                </header>
+    function endConversation() {
+        setError(undefined);
+        resetProcessingState();
+        conversation.endSession();
+    }
 
-                <div className="grid flex-1 gap-5 py-5 lg:grid-cols-[1fr_18rem]">
-                    <section className="flex min-h-[28rem] flex-col rounded-md border border-zinc-800 bg-zinc-900/70">
-                        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
-                            <h2 className="text-sm font-semibold text-zinc-200">Conversation</h2>
+    function handlePrimaryAction() {
+        if (conversation.status === "connecting") {
+            return;
+        }
+
+        if (conversation.status !== "connected") {
+            void startConversation();
+            return;
+        }
+
+        conversation.setMuted(!conversation.isMuted);
+    }
+
+    function clearLongPressTimer() {
+        if (pressTimerRef.current) {
+            clearTimeout(pressTimerRef.current);
+            pressTimerRef.current = undefined;
+        }
+    }
+
+    function handlePointerDown() {
+        if (conversation.status !== "connected") {
+            return;
+        }
+
+        clearLongPressTimer();
+        longPressTriggeredRef.current = false;
+
+        pressTimerRef.current = setTimeout(() => {
+            longPressTriggeredRef.current = true;
+            navigator.vibrate?.(35);
+            endConversation();
+        }, 850);
+    }
+
+    function handlePointerRelease() {
+        clearLongPressTimer();
+    }
+
+    function handleClick() {
+        if (longPressTriggeredRef.current) {
+            longPressTriggeredRef.current = false;
+            return;
+        }
+
+        handlePrimaryAction();
+    }
+
+    return (
+        <main className="min-h-svh overflow-hidden bg-[#090b0d] text-zinc-100">
+            <section className="grid min-h-svh lg:grid-cols-[minmax(0,1fr)_23rem]">
+                <div className="relative flex min-h-svh flex-col px-5 py-5 sm:px-8 lg:px-12">
+                    <header className="flex items-center justify-between gap-4">
+                        <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">
+                                Friday
+                            </p>
+                            <h1 className="mt-2 text-xl font-semibold text-white sm:text-2xl">
+                                Voice gateway
+                            </h1>
+                        </div>
+                        <div
+                            className={`status-pill status-pill-${controlState}`}
+                            aria-label={`Session status: ${copy.title}`}
+                        >
+                            <span />
+                            {copy.title}
+                        </div>
+                    </header>
+
+                    <div className="flex flex-1 items-center justify-center py-10">
+                        <div className="w-full max-w-sm text-center sm:max-w-md">
+                            <div className="relative mx-auto flex aspect-square w-[min(72vw,18rem)] items-center justify-center sm:w-80">
+                                <div className={`ambient-ring ambient-ring-${controlState}`} />
+                                {controlState === "connecting" ? <div className="connection-spinner" /> : null}
+                                <button
+                                    className={`voice-button voice-button-${controlState}`}
+                                    type="button"
+                                    aria-label={copy.detail}
+                                    aria-busy={controlState === "connecting"}
+                                    onClick={handleClick}
+                                    onPointerCancel={handlePointerRelease}
+                                    onPointerDown={handlePointerDown}
+                                    onPointerLeave={handlePointerRelease}
+                                    onPointerUp={handlePointerRelease}
+                                >
+                                    <span className="voice-button-content">
+                                        <span className="voice-button-title">{copy.title}</span>
+                                        {controlState === "listening" || controlState === "processing" || controlState === "speaking" ? (
+                                            <span className={`voice-wave voice-wave-${controlState}`} aria-hidden="true">
+                                                <span />
+                                                <span />
+                                                <span />
+                                                <span />
+                                                <span />
+                                            </span>
+                                        ) : null}
+                                    </span>
+                                </button>
+                            </div>
+
+                            <p className="mx-auto mt-6 min-h-12 max-w-xs text-balance text-sm leading-6 text-zinc-400 sm:max-w-sm">
+                                {copy.detail}
+                            </p>
+
+                            {error ? (
+                                <div className="mx-auto mt-4 max-w-sm rounded-md border border-red-500/30 bg-red-950/70 px-4 py-3 text-left text-sm leading-6 text-red-100">
+                                    {error}
+                                </div>
+                            ) : null}
+
                             {conversationId ? (
-                                <span className="max-w-56 truncate font-mono text-xs text-zinc-500">
+                                <p className="mx-auto mt-4 max-w-xs truncate font-mono text-[0.7rem] text-zinc-600 sm:max-w-sm">
                                     {conversationId}
-                                </span>
+                                </p>
                             ) : null}
                         </div>
-
-                        <div className="flex-1 space-y-3 overflow-y-auto p-4">
-                            {messages.length === 0 ? (
-                                <div className="flex h-full min-h-80 items-center justify-center text-center text-sm text-zinc-500">
-                                    Press start and speak when the browser asks for microphone access.
-                                </div>
-                            ) : (
-                                messages.map(message => (
-                                    <article
-                                        key={message.id}
-                                        className={`max-w-[82%] rounded-md px-3 py-2 text-sm leading-6 ${message.role === "user"
-                                                ? "ml-auto bg-emerald-500 text-zinc-950"
-                                                : "bg-zinc-800 text-zinc-100"
-                                            }`}
-                                    >
-                                        {message.message}
-                                    </article>
-                                ))
-                            )}
-                        </div>
-
-                        {error ? (
-                            <div className="border-t border-red-950 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-                                {error}
-                            </div>
-                        ) : null}
-                    </section>
-
-                    <aside className="flex flex-col gap-3 rounded-md border border-zinc-800 bg-zinc-900/70 p-4">
-                        <button
-                            className="rounded-md bg-emerald-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-                            disabled={isActive}
-                            type="button"
-                            onClick={startConversation}
-                        >
-                            Start
-                        </button>
-                        <button
-                            className="rounded-md border border-zinc-700 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-500"
-                            disabled={!isActive}
-                            type="button"
-                            onClick={() => conversation.endSession()}
-                        >
-                            End
-                        </button>
-                        <button
-                            className="rounded-md border border-zinc-700 px-4 py-3 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-800"
-                            type="button"
-                            onClick={() => conversation.setMuted(!conversation.isMuted)}
-                        >
-                            {conversation.isMuted ? "Unmute mic" : "Mute mic"}
-                        </button>
-
-                        <div className="mt-2 rounded-md bg-zinc-950 p-3 text-sm text-zinc-400">
-                            <div className="flex justify-between gap-3">
-                                <span>Mode</span>
-                                <span className="font-medium text-zinc-200">{conversation.mode}</span>
-                            </div>
-                            <div className="mt-2 flex justify-between gap-3">
-                                <span>Gateway</span>
-                                <span className="truncate font-mono text-xs text-zinc-300">Same origin</span>
-                            </div>
-                        </div>
-                    </aside>
+                    </div>
                 </div>
+
+                <aside className="hidden min-h-svh border-l border-white/10 bg-[#101318] lg:flex lg:flex-col">
+                    <div className="border-b border-white/10 px-5 py-5">
+                        <h2 className="text-sm font-semibold text-white">Transcript</h2>
+                        <p className="mt-1 text-xs text-zinc-500">Desktop session view</p>
+                    </div>
+
+                    <div className="flex-1 space-y-3 overflow-y-auto px-4 py-5">
+                        {transcriptMessages.length === 0 ? (
+                            <div className="flex h-full items-center justify-center px-4 text-center text-sm leading-6 text-zinc-500">
+                                Transcript appears here after the session starts.
+                            </div>
+                        ) : (
+                            transcriptMessages.map(message => (
+                                <article
+                                    key={message.id}
+                                    className={`rounded-md px-3 py-2 text-sm leading-6 ${
+                                        message.role === "user"
+                                            ? "ml-8 bg-emerald-400 text-zinc-950"
+                                            : "mr-8 bg-zinc-800 text-zinc-100"
+                                    }`}
+                                >
+                                    <p className="mb-1 text-[0.65rem] font-semibold uppercase tracking-[0.16em] opacity-70">
+                                        {message.role === "user" ? "You" : "Friday"}
+                                    </p>
+                                    {message.message}
+                                </article>
+                            ))
+                        )}
+                    </div>
+                </aside>
             </section>
         </main>
     );
