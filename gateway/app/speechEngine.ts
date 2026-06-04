@@ -2,6 +2,7 @@ import type { Server as HttpServer } from "node:http";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { GoogleGenAI } from "@google/genai";
 import { optionalEnv, requiredEnv } from "./env";
+import { isConversationMuted, setConversationMuted } from "./muteRegistry";
 
 const SPEECH_ENGINE_WS_PATH = "/api/speech-engine/ws";
 
@@ -81,6 +82,15 @@ export function attachSpeechEngine(server: HttpServer) {
         },
 
         async onTranscript(transcript, signal, session) {
+            // The client posts /api/mute when it mutes — for those conversations
+            // ElevenLabs still ships periodic "..." transcripts from silent audio.
+            // Don't burn an LLM call on them; just send an empty response back.
+            console.log(session.conversationId, isConversationMuted(session.conversationId as string));
+            if (session.conversationId && isConversationMuted(session.conversationId)) {
+                await session.sendResponse("");
+                return;
+            }
+
             const response = await getVertexClient().models.generateContentStream(
                 {
                     model: llmModel,
@@ -103,10 +113,12 @@ export function attachSpeechEngine(server: HttpServer) {
         },
 
         onClose(session) {
+            if (session.conversationId) setConversationMuted(session.conversationId, false);
             console.log(`Speech Engine session ended: ${session.conversationId}`);
         },
 
         onDisconnect(session) {
+            if (session.conversationId) setConversationMuted(session.conversationId, false);
             console.log(`Speech Engine session disconnected: ${session.conversationId}`);
         },
 

@@ -282,6 +282,29 @@ export function useVoiceAgent(): VoiceAgentState {
         };
     }, []);
 
+    // Sync mute state to the gateway. Driven off `conversation.isMuted` so we
+    // catch every transition regardless of which code path flipped it — the
+    // gateway uses this to short-circuit `onTranscript` for the phantom "..."
+    // user turns ElevenLabs emits from a muted-but-still-streaming mic track.
+    const lastSyncedMuteRef = useRef<boolean | null>(null);
+    useEffect(() => {
+        if (conversation.status !== "connected" || !conversationId) {
+            lastSyncedMuteRef.current = null;
+            return;
+        }
+        if (lastSyncedMuteRef.current === conversation.isMuted) return;
+        lastSyncedMuteRef.current = conversation.isMuted;
+        const path = conversation.isMuted ? "mute" : "unmute";
+        console.log(`[mute-sync] POST /api/${path}`, conversationId);
+        void fetch(`/api/${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ conversationId }),
+        }).catch(error => {
+            console.warn("Failed to sync mute state with gateway:", error);
+        });
+    }, [conversation.isMuted, conversation.status, conversationId]);
+
     const controlState = useMemo(
         () => getControlState(conversation.status, isStarting, conversation.isMuted, conversation.isSpeaking, isProcessing),
         [conversation.isMuted, conversation.isSpeaking, conversation.status, isProcessing, isStarting],
