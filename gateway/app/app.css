@@ -104,13 +104,14 @@ button:focus-visible {
     color: #cfd3dd;
 }
 
-.brand-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 12px var(--accent);
-    transition: background 0.4s;
+.brand-mark {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    display: block;
+    object-fit: contain;
+    /* the icon is already a glowing ring on dark — a soft accent halo helps it sit in the bar */
+    filter: drop-shadow(0 0 6px rgba(0, 0, 0, 0.6));
 }
 
 .status-chip {

@@ -202,7 +202,7 @@ function VoiceAgent() {
         <div className="app">
             <header className="topbar">
                 <div className="brand">
-                    <span className="brand-dot" />
+                    <img className="brand-mark" src="/icon-48.png" alt="" aria-hidden="true" />
                     FRIDAY
                 </div>
                 <div className={`status-chip dot-${status.dot}`}>
