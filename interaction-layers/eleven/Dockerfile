@@ -21,7 +21,7 @@ RUN bun install --frozen-lockfile --production
 FROM base AS production
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=build /app/build ./build
-COPY app/env.ts app/speechEngine.ts app/muteRegistry.ts app/orchestrator.ts app/activeSession.ts app/proactivePlayer.ts app/proactiveWs.ts ./app/
+COPY app ./app
 COPY public ./public
 COPY package.json index.ts ./
 USER bun
