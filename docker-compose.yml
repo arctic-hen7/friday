@@ -48,10 +48,10 @@ services:
       FRIDAY_DB_PATH: /data/friday.db
       PRIMARY_CONTAINER: friday-primary
       PODMAN_BIN: podman
-      CONTAINER_HOST: unix:///run/podman/podman.sock
+      CONTAINER_HOST: unix://${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
     volumes:
       - orchestrator-data:/data:z
-      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock:z
+      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
     expose:
       - "6000"
 
