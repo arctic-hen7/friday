@@ -15,9 +15,14 @@
 
 services:
   primary:
+    # Builds from `user.Dockerfile` (created by `setup.sh` from the
+    # `.example`), which chains on top of `friday-primary-base` (built
+    # from `primary.Dockerfile` by `setup.sh`). Run `./setup.sh` once
+    # after cloning; after that `podman-compose up -d --build primary`
+    # picks up changes to `user.Dockerfile`.
     build:
       context: .
-      dockerfile: primary.Dockerfile
+      dockerfile: user.Dockerfile
     image: friday-primary:latest
     container_name: friday-primary
     restart: unless-stopped

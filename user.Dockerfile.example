@@ -1,0 +1,23 @@
+# Copy to `user.Dockerfile` and customize.
+#
+# This image is what `docker-compose.yml` actually builds for the primary
+# container. It chains on top of `friday-primary-base`, which is built from
+# `primary.Dockerfile` by `setup.sh`. Add anything your skills need — CLIs,
+# language runtimes, system packages — here, and rebuild with:
+#
+#     podman-compose up -d --build primary
+#
+# Auth/state for these tools is usually best handled at runtime via a bind
+# mount in `docker-compose.override.yml` (see the example), not baked in.
+
+FROM friday-primary-base:latest
+
+# Examples (uncomment and adapt):
+#
+# RUN npm install --global @doist/todoist-cli
+#
+# RUN apt-get update \
+#     && apt-get install -y --no-install-recommends gcalcli \
+#     && rm -rf /var/lib/apt/lists/*
+#
+# RUN curl -fsSL https://example.com/some-tool/install.sh | sh

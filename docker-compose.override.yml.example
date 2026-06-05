@@ -1,0 +1,22 @@
+# Copy to `docker-compose.override.yml` and customize.
+#
+# Compose auto-merges this file on top of `docker-compose.yml` if present,
+# so anything you put here layers cleanly without touching the tracked
+# compose file. Common uses:
+#   - Bind-mounting host config/auth dirs into the primary container so
+#     OAuth refresh tokens etc. persist across rebuilds.
+#   - Injecting per-tool environment variables.
+#   - Exposing extra ports while developing.
+#   - Adding sidecar services.
+
+services:
+  primary:
+    volumes:
+      # Per-tool config/auth bind mounts. Use writable mounts (no `:ro`)
+      # for tools that refresh OAuth tokens.
+      # - ${HOME}/.config/todoist:/root/.config/todoist:z
+      # - ${HOME}/.config/gcalcli:/root/.config/gcalcli:z
+    environment:
+      # API keys / per-tool secrets. Define them in `.env` and reference
+      # here so they don't end up in this file.
+      # TODOIST_API_TOKEN: ${TODOIST_API_TOKEN}
