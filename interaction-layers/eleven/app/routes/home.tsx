@@ -23,9 +23,9 @@ type StatusCopy = {
 };
 
 const STATUS_COPY: Record<VoiceControlState, StatusCopy> = {
-    idle:       { label: "Hold to talk",       hint: "Press and hold the orb to start a session", chip: "Offline",    dot: "off"  },
+    idle:       { label: "Tap to connect",     hint: "Tap the orb to start a session",            chip: "Offline",    dot: "off"  },
     connecting: { label: "Connecting",          hint: "Securing a live channel…",                  chip: "Connecting", dot: "warn" },
-    error:      { label: "Couldn't connect",    hint: "Try again — press and hold the orb",        chip: "No signal",  dot: "err"  },
+    error:      { label: "Couldn't connect",    hint: "Tap the orb to reconnect",                  chip: "No signal",  dot: "err"  },
     listening:  { label: "Hold to talk",        hint: "Press and hold the orb to speak",           chip: "Ready",      dot: "live" },
     recording:  { label: "Listening",           hint: "Release the orb when you're done",          chip: "Live",       dot: "live" },
     processing: { label: "Thinking",            hint: "Friday is working on it",                   chip: "Live",       dot: "live" },

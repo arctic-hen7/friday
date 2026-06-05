@@ -65,9 +65,9 @@ function getControlCopy(state: VoiceControlState): VoiceControlCopy {
         case "speaking":
             return { title: "Speaking", detail: "Hold the orb to interrupt" };
         case "error":
-            return { title: "Try again", detail: "Tap and hold to retry" };
+            return { title: "Try again", detail: "Tap the orb to reconnect" };
         default:
-            return { title: "Hold to talk", detail: "Press and hold to start a session" };
+            return { title: "Tap to connect", detail: "Tap the orb to start a session" };
     }
 }
 
@@ -86,7 +86,6 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}): VoiceAgentSta
     const clientRef = useRef<VoiceClient | null>(null);
     const micLevelRef = useRef(0);
     const outputLevelRef = useRef(0);
-    const pendingStartRef = useRef(false);
     // Held in a ref so a re-rendered callback identity doesn't churn the
     // memoized handlers below.
     const ensureSessionRef = useRef(options.ensureSession);
@@ -136,40 +135,29 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}): VoiceAgentSta
         // context stays suspended for the rest of the page's lifetime.
         client.primePlayback();
 
-        if (phase === "ready" || phase === "speaking" || phase === "processing") {
-            void client.startRecording();
+        // Two-step UX: from idle/error this press is a "tap to connect" and
+        // does NOT arm recording — the user has to press again once we reach
+        // `ready`. This keeps the connect path a clean, short-lived gesture
+        // (which mobile browsers honour for the audio-context unlock) and
+        // separates it from the long-press push-to-talk.
+        if (phase === "idle" || phase === "error") {
+            void ensureConnected();
             return;
         }
-        if (phase === "idle" || phase === "error") {
-            pendingStartRef.current = true;
-            void ensureConnected();
+        if (phase === "ready" || phase === "speaking" || phase === "processing") {
+            void client.startRecording();
         }
     }, [phase, ensureConnected]);
 
     const handlePointerRelease = useCallback(() => {
         const client = clientRef.current;
         if (!client) return;
-
-        // If the press happened before the WS was ready, drop the queued start.
-        if (pendingStartRef.current) {
-            pendingStartRef.current = false;
-            return;
-        }
         if (phase === "recording") {
             client.stopRecording();
         }
     }, [phase]);
 
-    // If user pressed while idle, kick off recording once the WS reports ready.
-    useEffect(() => {
-        if (phase === "ready" && pendingStartRef.current) {
-            pendingStartRef.current = false;
-            void clientRef.current?.startRecording();
-        }
-    }, [phase]);
-
     const endConversation = useCallback(() => {
-        pendingStartRef.current = false;
         clientRef.current?.disconnect();
         setError(undefined);
     }, []);
