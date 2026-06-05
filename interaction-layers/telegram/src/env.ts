@@ -1,0 +1,45 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+// Repo-root .env. Path is relative to this file:
+//   interaction-layers/telegram/src/env.ts → ../../../.env
+const ROOT_ENV_PATH = resolve(import.meta.dirname, "../../../.env");
+
+let loaded = false;
+
+export function loadRootEnv() {
+    if (loaded) return;
+    loaded = true;
+
+    if (!existsSync(ROOT_ENV_PATH)) return;
+
+    const lines = readFileSync(ROOT_ENV_PATH, "utf8").split(/\r?\n/);
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const sep = trimmed.indexOf("=");
+        if (sep === -1) continue;
+        const key = trimmed.slice(0, sep).trim();
+        let value = trimmed.slice(sep + 1).trim();
+        if (!key || process.env[key] !== undefined) continue;
+        if (
+            (value.startsWith("\"") && value.endsWith("\"")) ||
+            (value.startsWith("'") && value.endsWith("'"))
+        ) {
+            value = value.slice(1, -1);
+        }
+        process.env[key] = value;
+    }
+}
+
+export function optionalEnv(name: string, fallback = ""): string {
+    loadRootEnv();
+    return process.env[name] || fallback;
+}
+
+export function requiredEnv(name: string): string {
+    loadRootEnv();
+    const v = process.env[name];
+    if (!v) throw new Error(`Missing required environment variable: ${name}`);
+    return v;
+}

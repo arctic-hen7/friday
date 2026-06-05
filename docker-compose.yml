@@ -73,6 +73,21 @@ services:
     expose:
       - "5000"
 
+  telegram:
+    build:
+      context: ./interaction-layers/telegram
+      target: production
+    image: friday-il-telegram:latest
+    container_name: friday-il-telegram
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      ORCHESTRATOR_URL: http://orchestrator:6000
+
   caddy:
     image: docker.io/caddy:2
     container_name: friday-caddy
