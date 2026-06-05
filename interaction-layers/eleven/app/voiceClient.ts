@@ -113,14 +113,12 @@ export class VoiceClient {
         this.ensurePlaybackCtx();
         void this.resumePlayback();
 
-        // Request mic permission early so we can fail fast if denied.
-        try {
-            this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        } catch (err) {
-            this.setPhase("error");
-            this.listeners.onError(micErrorMessage(err));
-            return;
-        }
+        // Don't grab the mic here. Holding a mic stream forces Android/iOS
+        // into the "voice communication" audio session mode, which routes
+        // *all* page output (including our <audio> playback element) to the
+        // earpiece. Mic acquisition is deferred to startRecording() and the
+        // stream is fully released on stopRecording() so the session reverts
+        // to media-playback mode and TTS goes through the loudspeaker.
 
         // Open the gateway WS.
         const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -170,8 +168,19 @@ export class VoiceClient {
         if (this.phase !== "recording") return;
 
         this.stopCapture();
+        // Fully release the mic so the OS leaves communication mode and the
+        // upcoming TTS plays through the loudspeaker rather than the earpiece.
+        this.releaseMicStream();
         this.sendControl({ type: "stop_recording" });
         this.setPhase("processing");
+    }
+
+    private releaseMicStream(): void {
+        if (!this.micStream) return;
+        for (const t of this.micStream.getTracks()) {
+            try { t.stop(); } catch { /* ignore */ }
+        }
+        this.micStream = null;
     }
 
     disconnect(): void {
