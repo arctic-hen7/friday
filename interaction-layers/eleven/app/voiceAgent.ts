@@ -104,7 +104,7 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}): VoiceAgentSta
         });
         clientRef.current = client;
         return () => {
-            client.disconnect();
+            client.dispose();
             clientRef.current = null;
         };
     }, []);
@@ -129,6 +129,12 @@ export function useVoiceAgent(options: UseVoiceAgentOptions = {}): VoiceAgentSta
         const client = clientRef.current;
         if (!client) return;
         setError(undefined);
+
+        // Unlock the playback AudioContext synchronously inside the gesture.
+        // Chrome/Brave on Android enforces autoplay policy strictly here:
+        // any await before this call drops the user activation and the
+        // context stays suspended for the rest of the page's lifetime.
+        client.primePlayback();
 
         if (phase === "ready" || phase === "speaking" || phase === "processing") {
             void client.startRecording();

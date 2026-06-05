@@ -84,14 +84,24 @@ export class VoiceClient {
 
     getPhase(): VoicePhase { return this.phase; }
 
+    // Unlock the playback AudioContext from inside a synchronous user gesture.
+    // Must be invoked from the pointer handler *before* any await — Chrome
+    // (incl. Brave) on Android only honours its autoplay policy if `resume()`
+    // runs while a sticky user activation is on the stack, and desktop MEI
+    // hides the bug. Once unlocked, the context is reused for every TTS frame
+    // and survives disconnect/reconnect, so this only needs to fire on the
+    // first tap.
+    primePlayback(): void {
+        this.ensurePlaybackCtx();
+        void this.resumePlayback();
+    }
+
     async connect(): Promise<void> {
         if (this.ws) return;
         this.setPhase("connecting");
 
-        // Prime the playback AudioContext now, while we still have a user
-        // gesture on the stack. If we wait until a `tts_start` message arrives
-        // the browser will create the context in `suspended` state and the
-        // scheduled BufferSources will queue silently forever.
+        // Safety net in case connect() is reached without a prior primePlayback
+        // — the canonical unlock happens synchronously in the pointer handler.
         this.ensurePlaybackCtx();
         void this.resumePlayback();
 
@@ -169,6 +179,17 @@ export class VoiceClient {
         this.pendingAgentTurns.clear();
         this.agentTurnOrder = [];
         this.emitTranscript();
+    }
+
+    // Full teardown including the playback AudioContext. Use this on component
+    // unmount; regular session end should go through disconnect() so the
+    // unlocked context survives for the next conversation.
+    dispose(): void {
+        this.disconnect();
+        if (this.playbackCtx) {
+            void this.playbackCtx.close().catch(() => { /* ignore */ });
+            this.playbackCtx = null;
+        }
     }
 
     // ---------- internals ----------
@@ -320,10 +341,8 @@ export class VoiceClient {
             this.micStream = null;
         }
         this.cancelPlayback();
-        if (this.playbackCtx) {
-            void this.playbackCtx.close().catch(() => { /* ignore */ });
-            this.playbackCtx = null;
-        }
+        // Deliberately keep playbackCtx alive — it was unlocked under a user
+        // gesture and we want to reuse it across disconnect/reconnect.
     }
 
     private ensurePlaybackCtx(): AudioContext {
