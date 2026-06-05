@@ -9,7 +9,7 @@ import { GoogleGenAI, type Content, type FunctionCall, type Part } from "@google
 import type { Message } from "./types";
 import { dispatchTool, liteToolDeclarations, type ToolCallContext } from "./tools";
 
-const MODEL = process.env.LITE_MODEL ?? "gemini-2.5-flash-lite";
+const MODEL = process.env.LITE_MODEL ?? "gemini-3.5-flash";
 
 let client: GoogleGenAI | undefined;
 function getClient(): GoogleGenAI {
