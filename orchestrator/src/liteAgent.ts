@@ -20,7 +20,8 @@ function getClient(): GoogleGenAI {
             // project: isProd ? process.env.VERTEX_PROJECT : undefined,
             // location: isProd ? process.env.VERTEX_LOCATION : undefined,
             // apiKey: isProd ? undefined : process.env.GEMINI_API_KEY ?? process.env.VERTEX_API_KEY,
-            apiKey: process.env.VERTEX_API_KEY,
+            vertexai: false,
+            apiKey: process.env.GEMINI_API_KEY,
         } as any);
     }
     return client;
