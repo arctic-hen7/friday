@@ -1,5 +1,5 @@
 import type { Route } from "./+types/select-session";
-import { jsonResponse, getApiHeaders } from "~/speechEngine";
+import { getApiHeaders, jsonResponse } from "~/http";
 import { setActiveSessionId, getActiveSessionId } from "~/activeSession";
 
 export async function loader() {

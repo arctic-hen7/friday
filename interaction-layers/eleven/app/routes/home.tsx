@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "./+types/home";
-import { ConversationProvider } from "@elevenlabs/react";
 import { useVoiceAgent, type VoiceControlState } from "../voiceAgent";
-import { Orb, PALETTES, type OrbRing, type OrbState } from "../orb";
+import { Orb, PALETTES, type OrbState } from "../orb";
 import { SessionPicker, useActiveSession } from "../sessionPicker";
 
 export function meta({ }: Route.MetaArgs) {
@@ -12,7 +11,6 @@ export function meta({ }: Route.MetaArgs) {
     ];
 }
 
-const HOLD_MS = 850;
 const PALETTE = "spectra";
 
 type StatusDot = "off" | "warn" | "err" | "live" | "muted";
@@ -25,13 +23,13 @@ type StatusCopy = {
 };
 
 const STATUS_COPY: Record<VoiceControlState, StatusCopy> = {
-    idle:       { label: "Tap to connect",     hint: "Start a voice session with Friday", chip: "Offline",    dot: "off"   },
-    connecting: { label: "Connecting",         hint: "Securing a live channel…",          chip: "Connecting", dot: "warn"  },
-    error:      { label: "Couldn't connect",   hint: "Tap to try again",                  chip: "No signal",  dot: "err"   },
-    listening:  { label: "Listening",          hint: "Hold to end · tap to mute",         chip: "Live",       dot: "live"  },
-    processing: { label: "Thinking",           hint: "Hold to end",                       chip: "Live",       dot: "live"  },
-    speaking:   { label: "Friday is speaking", hint: "Hold to end · tap to mute",         chip: "Live",       dot: "live"  },
-    muted:      { label: "Muted",              hint: "Tap to unmute · hold to end",       chip: "Muted",      dot: "muted" },
+    idle:       { label: "Hold to talk",       hint: "Press and hold the orb to start a session", chip: "Offline",    dot: "off"  },
+    connecting: { label: "Connecting",          hint: "Securing a live channel…",                  chip: "Connecting", dot: "warn" },
+    error:      { label: "Couldn't connect",    hint: "Try again — press and hold the orb",        chip: "No signal",  dot: "err"  },
+    listening:  { label: "Hold to talk",        hint: "Press and hold the orb to speak",           chip: "Ready",      dot: "live" },
+    recording:  { label: "Listening",           hint: "Release the orb when you're done",          chip: "Live",       dot: "live" },
+    processing: { label: "Thinking",            hint: "Friday is working on it",                   chip: "Live",       dot: "live" },
+    speaking:   { label: "Friday is speaking",  hint: "Hold the orb to interrupt",                 chip: "Live",       dot: "live" },
 };
 
 const ORB_STATE: Record<VoiceControlState, OrbState> = {
@@ -39,12 +37,12 @@ const ORB_STATE: Record<VoiceControlState, OrbState> = {
     connecting: "connecting",
     error:      "error",
     listening:  "listening",
+    recording:  "userSpeaking",
     processing: "processing",
     speaking:   "responding",
-    muted:      "muted",
 };
 
-const LIVE_STATES = new Set<VoiceControlState>(["listening", "processing", "speaking", "muted"]);
+const LIVE_STATES = new Set<VoiceControlState>(["listening", "recording", "processing", "speaking"]);
 
 function formatStamp(ms: number) {
     const total = Math.max(0, Math.floor(ms / 1000));
@@ -54,7 +52,7 @@ function formatStamp(ms: number) {
 }
 
 function VoiceAgent() {
-    const { control, error, transcript, getInputVolume, getOutputVolume } = useVoiceAgent();
+    const { control, sessionActive, error, transcript, getInputVolume, getOutputVolume, endConversation } = useVoiceAgent();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const orbRef = useRef<Orb | null>(null);
     const railBodyRef = useRef<HTMLDivElement | null>(null);
@@ -62,7 +60,6 @@ function VoiceAgent() {
     const status = STATUS_COPY[control.state];
     const live = LIVE_STATES.has(control.state);
 
-    // boot the orb once, drive it from React state thereafter
     useEffect(() => {
         if (!canvasRef.current || orbRef.current) return;
         const orb = new Orb(canvasRef.current, {
@@ -88,8 +85,7 @@ function VoiceAgent() {
         orbRef.current?.setState(ORB_STATE[control.state]);
     }, [control.state]);
 
-    // feed mic / agent volume into the orb so particles bounce with the audio.
-    // input volume drives the orb while the user is talking; output volume while Friday is.
+    // Feed mic / agent volume into the orb so particles bounce with the audio.
     useEffect(() => {
         const orb = orbRef.current;
         if (!orb || !live) {
@@ -100,8 +96,7 @@ function VoiceAgent() {
         const tick = () => {
             let v = 0;
             if (control.state === "speaking") v = getOutputVolume();
-            else if (control.state === "listening") v = getInputVolume();
-            // muted / processing leave amplitude at 0 — state's base energy still animates the orb
+            else if (control.state === "recording") v = getInputVolume();
             orb.setAmplitude(Number.isFinite(v) ? v : 0);
             raf = requestAnimationFrame(tick);
         };
@@ -109,52 +104,18 @@ function VoiceAgent() {
         return () => cancelAnimationFrame(raf);
     }, [live, control.state, getInputVolume, getOutputVolume]);
 
-    // visual hold-to-end progress — voiceAgent.ts owns the actual end timer,
-    // we just mirror the press window onto the ring for feedback.
-    const [holdProgress, setHoldProgress] = useState<number | null>(null);
-    const holdRafRef = useRef<number | null>(null);
-
-    function clearHoldRaf() {
-        if (holdRafRef.current !== null) {
-            cancelAnimationFrame(holdRafRef.current);
-            holdRafRef.current = null;
-        }
-    }
-
-    function beginHoldRing() {
-        // only show ring while a session is in progress (matches voiceAgent's long-press scope)
-        if (!live) return;
-        const started = performance.now();
-        const step = () => {
-            const p = Math.min(1, (performance.now() - started) / HOLD_MS);
-            setHoldProgress(p);
-            if (p < 1) holdRafRef.current = requestAnimationFrame(step);
-        };
-        holdRafRef.current = requestAnimationFrame(step);
-    }
-
-    function endHoldRing() {
-        clearHoldRaf();
-        setHoldProgress(null);
-    }
-
-    useEffect(() => () => clearHoldRaf(), []);
-
     useEffect(() => {
         const orb = orbRef.current;
         if (!orb) return;
-        let ring: OrbRing | null;
-        if (holdProgress !== null) ring = { mode: "progress", p: holdProgress };
-        else if (control.state === "connecting") ring = { mode: "sweep" };
-        else ring = null;
-        orb.setRing(ring);
-    }, [holdProgress, control.state]);
+        if (control.state === "connecting") orb.setRing({ mode: "sweep" });
+        else orb.setRing(null);
+    }, [control.state]);
 
-    // session timer — runs while in any live state
+    // Session timer — runs while a session is active.
     const [elapsed, setElapsed] = useState(0);
     const startRef = useRef<number | null>(null);
     useEffect(() => {
-        if (!live) {
+        if (!sessionActive) {
             startRef.current = null;
             setElapsed(0);
             return;
@@ -164,13 +125,12 @@ function VoiceAgent() {
             if (startRef.current !== null) setElapsed(Date.now() - startRef.current);
         }, 500);
         return () => clearInterval(id);
-    }, [live]);
+    }, [sessionActive]);
 
-    // stable per-message timestamp, relative to session start
     const stampsRef = useRef<Map<string, string>>(new Map());
     useEffect(() => {
-        if (!live) stampsRef.current.clear();
-    }, [live]);
+        if (!sessionActive) stampsRef.current.clear();
+    }, [sessionActive]);
 
     const transcriptWithStamps = useMemo(() => {
         const stamps = stampsRef.current;
@@ -191,10 +151,10 @@ function VoiceAgent() {
     }, [transcriptWithStamps.length]);
 
     const micNote =
-        control.state === "muted"
-            ? "Microphone muted"
-            : live
-                ? "Microphone live"
+        control.state === "recording"
+            ? "Microphone live"
+            : sessionActive
+                ? "Microphone armed"
                 : "Microphone idle";
 
     const handlers = control.buttonHandlers;
@@ -218,13 +178,12 @@ function VoiceAgent() {
                         <button
                             type="button"
                             className="orb-hit"
-                            aria-label="Voice control — tap to connect or mute; hold to end"
+                            aria-label="Voice control — press and hold to talk"
                             aria-busy={control.isConnecting}
-                            onClick={handlers.onClick}
-                            onPointerDown={e => { handlers.onPointerDown?.(e); beginHoldRing(); }}
-                            onPointerUp={e => { handlers.onPointerUp?.(e); endHoldRing(); }}
-                            onPointerCancel={e => { handlers.onPointerCancel?.(e); endHoldRing(); }}
-                            onPointerLeave={e => { handlers.onPointerLeave?.(e); endHoldRing(); }}
+                            onPointerDown={handlers.onPointerDown}
+                            onPointerUp={handlers.onPointerUp}
+                            onPointerCancel={handlers.onPointerCancel}
+                            onPointerLeave={handlers.onPointerLeave}
                         />
                     </div>
 
@@ -234,6 +193,17 @@ function VoiceAgent() {
                     </div>
 
                     {error ? <div className="error-panel">{error}</div> : null}
+
+                    {sessionActive ? (
+                        <button
+                            type="button"
+                            className="end-conversation"
+                            onClick={endConversation}
+                        >
+                            <span className="end-conversation-glyph" aria-hidden="true" />
+                            End conversation
+                        </button>
+                    ) : null}
                 </main>
 
                 <aside className="rail">
@@ -244,7 +214,7 @@ function VoiceAgent() {
                     <div className="rail-body" ref={railBodyRef}>
                         {transcriptWithStamps.length === 0 ? (
                             <div className="rail-empty">
-                                No session yet. Tap the orb to connect and start talking with Friday.
+                                No session yet. Press and hold the orb to start talking with Friday.
                             </div>
                         ) : (
                             transcriptWithStamps.map(m => (
@@ -276,7 +246,7 @@ function HomeInner() {
     if (!resolved) return null;
     if (!active) return <SessionPicker onPicked={(id) => void set(id)} />;
     return (
-        <ConversationProvider>
+        <>
             <VoiceAgent />
             <button
                 className="session-switch"
@@ -285,7 +255,7 @@ function HomeInner() {
             >
                 Switch session
             </button>
-        </ConversationProvider>
+        </>
     );
 }
 

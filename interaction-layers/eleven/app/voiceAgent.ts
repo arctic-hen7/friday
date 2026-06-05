@@ -1,20 +1,15 @@
-import { useConversation } from "@elevenlabs/react";
-import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes } from "react";
-import { ProactiveListener } from "./proactiveListener";
+import { useCallback, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes } from "react";
+import { VoiceClient, type VoicePhase, type VoiceTranscriptMessage } from "./voiceClient";
 
-export type TranscriptMessage = {
-    id: string;
-    role: "user" | "agent";
-    message: string;
-};
+export type TranscriptMessage = VoiceTranscriptMessage;
 
 export type VoiceControlState =
     | "idle"
     | "connecting"
-    | "listening"
-    | "processing"
+    | "listening"   // ready, mic open but not currently transmitting
+    | "recording"   // user holding the orb
+    | "processing"  // waiting for STT + first response chunks
     | "speaking"
-    | "muted"
     | "error";
 
 export type VoiceControlCopy = {
@@ -27,7 +22,7 @@ export type VoiceControl = {
     copy: VoiceControlCopy;
     buttonHandlers: Pick<
         ButtonHTMLAttributes<HTMLButtonElement>,
-        "onClick" | "onPointerCancel" | "onPointerDown" | "onPointerLeave" | "onPointerUp"
+        "onPointerCancel" | "onPointerDown" | "onPointerLeave" | "onPointerUp"
     >;
     isConnecting: boolean;
     showWave: boolean;
@@ -35,392 +30,162 @@ export type VoiceControl = {
 
 export type VoiceAgentState = {
     control: VoiceControl;
-    conversationId?: string;
+    sessionActive: boolean;
     error?: string;
     transcript: TranscriptMessage[];
     getInputVolume: () => number;
     getOutputVolume: () => number;
-};
-
-type ConversationStatus = "disconnected" | "connecting" | "connected" | "error";
-
-type MessagePayload = {
-    message: string;
-    event_id?: number;
-    role: "user" | "agent";
-};
-
-type VadScorePayload = {
-    vadScore: number;
+    endConversation: () => void;
 };
 
 const TRANSCRIPT_LIMIT = 18;
-const LONG_PRESS_END_DELAY_MS = 850;
-const HAPTIC_END_PULSE_MS = 35;
-const VAD_SPEECH_THRESHOLD = 0.45;
-const VAD_SILENCE_THRESHOLD = 0.2;
-const VAD_PROCESSING_DELAY_MS = 450;
 
-async function requestMicrophoneAccess() {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-    for (const track of stream.getTracks()) {
-        track.stop();
+function phaseToControlState(phase: VoicePhase): VoiceControlState {
+    switch (phase) {
+        case "idle":       return "idle";
+        case "connecting": return "connecting";
+        case "ready":      return "listening";
+        case "recording":  return "recording";
+        case "processing": return "processing";
+        case "speaking":   return "speaking";
+        case "error":      return "error";
     }
 }
 
-async function getConversationToken() {
-    const response = await fetch("/api/conversation-token", {
-        method: "POST",
-    });
-
-    if (!response.ok) {
-        throw new Error("Could not create an ElevenLabs conversation token");
-    }
-
-    const data = (await response.json()) as { token?: string };
-
-    if (!data.token) {
-        throw new Error("Gateway did not return a conversation token");
-    }
-
-    return data.token;
-}
-
-function getErrorMessage(error: unknown) {
-    if (error instanceof DOMException && error.name === "NotAllowedError") {
-        return "Microphone permission was denied. Allow microphone access in your browser settings and try again.";
-    }
-
-    if (error instanceof DOMException && error.name === "NotFoundError") {
-        return "No microphone was found. Connect a microphone and try again.";
-    }
-
-    if (error instanceof Error) {
-        return error.message;
-    }
-
-    return String(error);
-}
-
-function getControlState(
-    status: ConversationStatus,
-    isStarting: boolean,
-    isMuted: boolean,
-    isSpeaking: boolean,
-    isProcessing: boolean,
-): VoiceControlState {
-    // local "starting" flag covers the gap between tap and the SDK actually
-    // entering its connecting state — keeps UI feedback instant
-    if (isStarting || status === "connecting") {
-        return "connecting";
-    }
-
-    if (status === "error") {
-        return "error";
-    }
-
-    if (status !== "connected") {
-        return "idle";
-    }
-
-    if (isMuted) {
-        return "muted";
-    }
-
-    if (isSpeaking) {
-        return "speaking";
-    }
-
-    if (isProcessing) {
-        return "processing";
-    }
-
-    return "listening";
-}
-
-function getControlCopy(controlState: VoiceControlState): VoiceControlCopy {
-    switch (controlState) {
+function getControlCopy(state: VoiceControlState): VoiceControlCopy {
+    switch (state) {
         case "connecting":
-            return {
-                title: "Connecting",
-                detail: "Opening the microphone and joining the voice session",
-            };
+            return { title: "Connecting", detail: "Opening the microphone and joining" };
         case "listening":
-            return {
-                title: "Listening",
-                detail: "Tap to mute. Hold to end.",
-            };
+            return { title: "Hold to talk", detail: "Press and hold the orb to speak" };
+        case "recording":
+            return { title: "Listening", detail: "Release when you're done" };
         case "processing":
-            return {
-                title: "Processing",
-                detail: "Friday is working on your last message",
-            };
+            return { title: "Thinking", detail: "Friday is working on it" };
         case "speaking":
-            return {
-                title: "Speaking",
-                detail: "Cut in anytime. Tap to mute, hold to end.",
-            };
-        case "muted":
-            return {
-                title: "Muted",
-                detail: "Tap to unmute. Hold to end.",
-            };
+            return { title: "Speaking", detail: "Hold the orb to interrupt" };
         case "error":
-            return {
-                title: "Try again",
-                detail: "Tap after fixing the issue below",
-            };
+            return { title: "Try again", detail: "Tap and hold to retry" };
         default:
-            return {
-                title: "Start",
-                detail: "Tap to talk with Friday",
-            };
+            return { title: "Hold to talk", detail: "Press and hold to start a session" };
     }
 }
 
 export function useVoiceAgent(): VoiceAgentState {
-    const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+    const [phase, setPhase] = useState<VoicePhase>("idle");
     const [error, setError] = useState<string>();
-    const [conversationId, setConversationId] = useState<string>();
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [isStarting, setIsStarting] = useState(false);
-    const heardSpeechRef = useRef(false);
-    const pressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-    const processingTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-    const longPressTriggeredRef = useRef(false);
-    const proactiveRef = useRef<ProactiveListener | null>(null);
+    const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+    const clientRef = useRef<VoiceClient | null>(null);
+    const micLevelRef = useRef(0);
+    const outputLevelRef = useRef(0);
+    const pendingStartRef = useRef(false);
 
-    function clearProcessingTimer() {
-        if (processingTimerRef.current) {
-            clearTimeout(processingTimerRef.current);
-            processingTimerRef.current = undefined;
-        }
-    }
-
-    function resetProcessingState() {
-        clearProcessingTimer();
-        heardSpeechRef.current = false;
-        setIsProcessing(false);
-    }
-
-    const conversation = useConversation({
-        onConnect: ({ conversationId }) => {
-            setConversationId(conversationId);
-            setError(undefined);
-            setIsStarting(false);
-            resetProcessingState();
-
-            // Spin up the proactive listener so out-of-band TTS from the
-            // orchestrator can play through this same conversation.
-            proactiveRef.current?.stop();
-            proactiveRef.current = new ProactiveListener(conversationId);
-            proactiveRef.current.start();
-        },
-        onDisconnect: () => {
-            setConversationId(undefined);
-            setIsStarting(false);
-            resetProcessingState();
-            proactiveRef.current?.stop();
-            proactiveRef.current = null;
-        },
-        onError: message => {
-            setError(message);
-            setIsStarting(false);
-            resetProcessingState();
-        },
-        onMessage: (payload: MessagePayload) => {
-            if (payload.role === "agent") {
-                setIsProcessing(false);
-            }
-
-            setMessages(current => [
-                ...current,
-                {
-                    id: `${payload.event_id ?? current.length}-${payload.role}-${Date.now()}`,
-                    role: payload.role === "agent" ? "agent" : "user",
-                    message: payload.message,
-                },
-            ]);
-        },
-        onModeChange: ({ mode }) => {
-            if (mode === "speaking") {
-                setIsProcessing(false);
-            }
-        },
-        onInterruption: () => {
-            resetProcessingState();
-        },
-        onVadScore: ({ vadScore }: VadScorePayload) => {
-            if (vadScore >= VAD_SPEECH_THRESHOLD) {
-                // If a proactive is currently playing, the user has just cut
-                // in — kill playback immediately and mark the orchestrator
-                // turn as user-interrupted.
-                if (proactiveRef.current?.isPlaying()) {
-                    proactiveRef.current.abort();
-                }
-                clearProcessingTimer();
-                heardSpeechRef.current = true;
-                setIsProcessing(false);
-                return;
-            }
-
-            if (!heardSpeechRef.current) {
-                return;
-            }
-
-            if (vadScore > VAD_SILENCE_THRESHOLD) {
-                clearProcessingTimer();
-                return;
-            }
-
-            if (processingTimerRef.current || isProcessing) {
-                return;
-            }
-
-            processingTimerRef.current = setTimeout(() => {
-                processingTimerRef.current = undefined;
-                setIsProcessing(true);
-            }, VAD_PROCESSING_DELAY_MS);
-        },
-    });
-
+    // Lazily create the client. Listener handles are stable through refs so we
+    // don't need to recreate it on rerender.
     useEffect(() => {
-        if (conversation.status !== "connected" || conversation.isMuted || conversation.isSpeaking) {
-            resetProcessingState();
-        }
-    }, [conversation.isMuted, conversation.isSpeaking, conversation.status]);
-
-    useEffect(() => {
+        const client = new VoiceClient({
+            onPhase: (p) => setPhase(p),
+            onError: (m) => setError(m),
+            onTranscript: (messages) => setTranscript(messages),
+            onMicLevel: (l) => { micLevelRef.current = l; },
+            onOutputLevel: (l) => { outputLevelRef.current = l; },
+        });
+        clientRef.current = client;
         return () => {
-            clearLongPressTimer();
-            clearProcessingTimer();
-            proactiveRef.current?.stop();
-            proactiveRef.current = null;
+            client.disconnect();
+            clientRef.current = null;
         };
     }, []);
 
-    // Sync mute state to the gateway. Driven off `conversation.isMuted` so we
-    // catch every transition regardless of which code path flipped it — the
-    // gateway uses this to short-circuit `onTranscript` for the phantom "..."
-    // user turns ElevenLabs emits from a muted-but-still-streaming mic track.
-    const lastSyncedMuteRef = useRef<boolean | null>(null);
-    useEffect(() => {
-        if (conversation.status !== "connected" || !conversationId) {
-            lastSyncedMuteRef.current = null;
-            return;
-        }
-        if (lastSyncedMuteRef.current === conversation.isMuted) return;
-        lastSyncedMuteRef.current = conversation.isMuted;
-        const path = conversation.isMuted ? "mute" : "unmute";
-        console.log(`[mute-sync] POST /api/${path}`, conversationId);
-        void fetch(`/api/${path}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ conversationId }),
-        }).catch(error => {
-            console.warn("Failed to sync mute state with gateway:", error);
-        });
-    }, [conversation.isMuted, conversation.status, conversationId]);
-
-    const controlState = useMemo(
-        () => getControlState(conversation.status, isStarting, conversation.isMuted, conversation.isSpeaking, isProcessing),
-        [conversation.isMuted, conversation.isSpeaking, conversation.status, isProcessing, isStarting],
-    );
-    const copy = useMemo(() => getControlCopy(controlState), [controlState]);
-    const transcript = useMemo(() => messages.slice(-TRANSCRIPT_LIMIT), [messages]);
-
-    async function startConversation() {
-        try {
+    const ensureConnected = useCallback(async () => {
+        const client = clientRef.current;
+        if (!client) return;
+        if (phase === "connecting") return;
+        if (phase === "idle" || phase === "error") {
             setError(undefined);
-            setMessages([]); // fresh transcript each new chat
-            setIsStarting(true);
-            resetProcessingState();
-            await requestMicrophoneAccess();
-            const token = await getConversationToken();
-
-            conversation.startSession({
-                conversationToken: token,
-                connectionType: "webrtc",
-            });
-        } catch (error) {
-            setIsStarting(false);
-            setError(getErrorMessage(error));
+            await client.connect();
         }
-    }
+    }, [phase]);
 
-    function endConversation() {
+    const handlePointerDown = useCallback(() => {
+        const client = clientRef.current;
+        if (!client) return;
         setError(undefined);
-        resetProcessingState();
-        conversation.endSession();
-    }
 
-    function handlePrimaryAction() {
-        if (conversation.status === "connecting") {
+        if (phase === "ready" || phase === "speaking" || phase === "processing") {
+            void client.startRecording();
             return;
         }
+        if (phase === "idle" || phase === "error") {
+            pendingStartRef.current = true;
+            void ensureConnected();
+        }
+    }, [phase, ensureConnected]);
 
-        if (conversation.status !== "connected") {
-            void startConversation();
+    const handlePointerRelease = useCallback(() => {
+        const client = clientRef.current;
+        if (!client) return;
+
+        // If the press happened before the WS was ready, drop the queued start.
+        if (pendingStartRef.current) {
+            pendingStartRef.current = false;
             return;
         }
-
-        conversation.setMuted(!conversation.isMuted);
-    }
-
-    function clearLongPressTimer() {
-        if (pressTimerRef.current) {
-            clearTimeout(pressTimerRef.current);
-            pressTimerRef.current = undefined;
+        if (phase === "recording") {
+            client.stopRecording();
         }
-    }
+    }, [phase]);
 
-    function handlePointerDown() {
-        if (conversation.status !== "connected") {
-            return;
+    // If user pressed while idle, kick off recording once the WS reports ready.
+    useEffect(() => {
+        if (phase === "ready" && pendingStartRef.current) {
+            pendingStartRef.current = false;
+            void clientRef.current?.startRecording();
         }
+    }, [phase]);
 
-        clearLongPressTimer();
-        longPressTriggeredRef.current = false;
+    const endConversation = useCallback(() => {
+        pendingStartRef.current = false;
+        clientRef.current?.disconnect();
+        setError(undefined);
+    }, []);
 
-        pressTimerRef.current = setTimeout(() => {
-            longPressTriggeredRef.current = true;
-            navigator.vibrate?.(HAPTIC_END_PULSE_MS);
-            endConversation();
-        }, LONG_PRESS_END_DELAY_MS);
-    }
+    const controlState = useMemo(() => phaseToControlState(phase), [phase]);
+    const copy = useMemo(() => getControlCopy(controlState), [controlState]);
+    const trimmed = useMemo(() => transcript.slice(-TRANSCRIPT_LIMIT), [transcript]);
 
-    function handlePointerRelease() {
-        clearLongPressTimer();
-    }
+    const getInputVolume = useCallback(() => micLevelRef.current, []);
+    const getOutputVolume = useCallback(() => outputLevelRef.current, []);
 
-    function handleClick() {
-        if (longPressTriggeredRef.current) {
-            longPressTriggeredRef.current = false;
-            return;
-        }
-
-        handlePrimaryAction();
-    }
+    const sessionActive =
+        phase === "connecting" ||
+        phase === "ready" ||
+        phase === "recording" ||
+        phase === "processing" ||
+        phase === "speaking";
 
     return {
         control: {
             state: controlState,
             copy,
             buttonHandlers: {
-                onClick: handleClick,
-                onPointerCancel: handlePointerRelease,
                 onPointerDown: handlePointerDown,
-                onPointerLeave: handlePointerRelease,
                 onPointerUp: handlePointerRelease,
+                onPointerCancel: handlePointerRelease,
+                onPointerLeave: handlePointerRelease,
             },
             isConnecting: controlState === "connecting",
-            showWave: controlState === "listening" || controlState === "processing" || controlState === "speaking",
+            showWave:
+                controlState === "listening" ||
+                controlState === "recording" ||
+                controlState === "processing" ||
+                controlState === "speaking",
         },
-        conversationId,
+        sessionActive,
         error,
-        transcript,
-        getInputVolume: conversation.getInputVolume,
-        getOutputVolume: conversation.getOutputVolume,
+        transcript: trimmed,
+        getInputVolume,
+        getOutputVolume,
+        endConversation,
     };
 }
