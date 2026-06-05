@@ -70,10 +70,14 @@ export async function spawnJob(
     // Kick off the subprocess but do NOT await it — we want immediate return.
     const proc = spawn({
         cmd: [PODMAN_BIN, "exec", PRIMARY_CONTAINER, "codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-o", outFile, instruction],
-        stdout: "ignore",   // stderr/stdout from codex are noisy; we ignore them
+        stdout: "pipe",
         stderr: "pipe",
     });
     live.set(jobId, proc);
+
+    // Drain stdout/stderr eagerly so the pipe buffer can't stall codex.
+    const stdoutPromise = new Response(proc.stdout).text();
+    const stderrPromise = new Response(proc.stderr).text();
 
     // Detached completion handler.
     void (async () => {
@@ -111,10 +115,14 @@ export async function spawnJob(
                 };
                 onProactivePayload(payload);
             } else {
-                // Capture stderr for diagnostic. Codex puts a lot to stderr;
-                // we only want the tail for the failure message.
-                const stderrText = await new Response(proc.stderr).text();
-                const tail = stderrText.trim().split("\n").slice(-10).join("\n");
+                const stdoutText = (await stdoutPromise).trim();
+                const stderrText = (await stderrPromise).trim();
+                // Tail used for the structured error / proactive message.
+                const tail = stderrText.split("\n").slice(-10).join("\n");
+
+                // Dump the full streams to the log so we can debug failures.
+                if (stdoutText) console.warn(`[jobs] stdout ${jobId}:\n${stdoutText}`);
+                if (stderrText) console.warn(`[jobs] stderr ${jobId}:\n${stderrText}`);
 
                 // If the proc was killed by us, mark cancelled, no proactive.
                 if (proc.signalCode === "SIGKILL" || proc.killed) {
