@@ -66,7 +66,10 @@ type Session = {
 type TtsTurn = {
     turnId: string;
     ws: WebSocket;
-    finished: boolean;
+    opened: boolean;
+    finalized: boolean;          // caller has signalled end-of-input
+    finished: boolean;           // TTS has reported isFinal
+    pendingText: string[];       // text queued before the WS opens
 };
 
 export function attachVoiceWs(server: HttpServer): void {
@@ -233,9 +236,19 @@ function wireOrchestrator(session: Session, ws: WebSocket): void {
             const text: string = msg.text ?? "";
             const final: boolean = !!msg.final;
 
-            if (text || final) ensureTtsTurn(session, turnId);
-            if (text) sendTtsText(session, text);
-            if (final) finishTtsTurn(session);
+            if (text) {
+                ensureTtsTurn(session, turnId);
+                sendTtsText(session, text);
+            }
+            if (final) {
+                if (session.tts?.turnId === turnId) {
+                    finishTtsTurn(session);
+                } else {
+                    // Turn had no text — never opened TTS. Tell the client
+                    // anyway so it doesn't stay in `speaking`.
+                    sendJson(session.client, { type: "tts_end", turnId });
+                }
+            }
 
             sendJson(session.client, {
                 type: "transcript_agent",
@@ -286,7 +299,14 @@ function openTtsTurn(session: Session, turnId: string): void {
         `&output_format=${encodeURIComponent(TTS_OUTPUT_FORMAT)}`;
 
     const ws = new WebSocket(url, { headers: { "xi-api-key": apiKey } });
-    const turn: TtsTurn = { turnId, ws, finished: false };
+    const turn: TtsTurn = {
+        turnId,
+        ws,
+        opened: false,
+        finalized: false,
+        finished: false,
+        pendingText: [],
+    };
     session.tts = turn;
 
     ws.on("open", () => {
@@ -300,11 +320,25 @@ function openTtsTurn(session: Session, turnId: string): void {
         } catch (err) {
             console.warn("[voice-ws] tts BOS failed:", err);
         }
+        turn.opened = true;
         sendJson(session.client, {
             type: "tts_start",
             turnId,
             sampleRate: TTS_SAMPLE_RATE,
         });
+        // Drain anything that arrived while the WS was still CONNECTING.
+        for (const text of turn.pendingText) {
+            try {
+                ws.send(JSON.stringify({ text, try_trigger_generation: true }));
+            } catch (err) {
+                console.warn("[voice-ws] tts drain text failed:", err);
+            }
+        }
+        turn.pendingText = [];
+        if (turn.finalized) {
+            try { ws.send(JSON.stringify({ text: "" })); }
+            catch (err) { console.warn("[voice-ws] tts drain finalize failed:", err); }
+        }
     });
 
     ws.on("message", (raw) => {
@@ -336,7 +370,14 @@ function openTtsTurn(session: Session, turnId: string): void {
 
 function sendTtsText(session: Session, text: string): void {
     const turn = session.tts;
-    if (!turn || turn.ws.readyState !== WebSocket.OPEN) return;
+    if (!turn) return;
+    if (!turn.opened) {
+        // Queue until the WS opens — short replies frequently arrive in full
+        // while the TTS WS is still CONNECTING.
+        turn.pendingText.push(text);
+        return;
+    }
+    if (turn.ws.readyState !== WebSocket.OPEN) return;
     try {
         turn.ws.send(JSON.stringify({ text, try_trigger_generation: true }));
     } catch (err) {
@@ -346,7 +387,10 @@ function sendTtsText(session: Session, text: string): void {
 
 function finishTtsTurn(session: Session): void {
     const turn = session.tts;
-    if (!turn || turn.ws.readyState !== WebSocket.OPEN) return;
+    if (!turn) return;
+    turn.finalized = true;
+    if (!turn.opened) return; // open handler will flush the EOS
+    if (turn.ws.readyState !== WebSocket.OPEN) return;
     try {
         // Empty string signals end-of-input to ElevenLabs; remaining audio
         // continues to stream down before the TTS WS closes itself.
