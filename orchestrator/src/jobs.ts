@@ -43,6 +43,7 @@ export function killJob(id: string): boolean {
     const proc = live.get(id);
     if (!proc) return false;
     proc.kill("SIGKILL");
+    console.log(`[jobs] kill ${id}: SIGKILL sent`);
     return true;
 }
 
@@ -63,6 +64,9 @@ export async function spawnJob(
 
     insertJob(jobId, sessionId, instruction);
 
+    const preview = instruction.length > 120 ? `${instruction.slice(0, 120)}…` : instruction;
+    console.log(`[jobs] spawn ${jobId} (source=${source}, session=${sessionId ?? "none"}): ${preview}`);
+
     // Kick off the subprocess but do NOT await it — we want immediate return.
     const proc = spawn({
         cmd: [PODMAN_BIN, "exec", PRIMARY_CONTAINER, "codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-o", outFile, instruction],
@@ -76,6 +80,8 @@ export async function spawnJob(
         try {
             const exitCode = await proc.exited;
             live.delete(jobId);
+
+            console.log(`[jobs] exit ${jobId}: code=${exitCode}`);
 
             if (exitCode === 0) {
                 // Read the result file out of the container.
@@ -95,6 +101,7 @@ export async function spawnJob(
                 });
 
                 updateJob(jobId, "finished", text, null);
+                console.log(`[jobs] finished ${jobId}: ${text.length} chars`);
 
                 const payload: ProactivePayload = {
                     source,
@@ -112,10 +119,12 @@ export async function spawnJob(
                 // If the proc was killed by us, mark cancelled, no proactive.
                 if (proc.signalCode === "SIGKILL" || proc.killed) {
                     updateJob(jobId, "cancelled", null, "killed");
+                    console.log(`[jobs] cancelled ${jobId} (killed)`);
                     return;
                 }
 
                 updateJob(jobId, "failed", null, tail || `exit code ${exitCode}`);
+                console.warn(`[jobs] failed ${jobId}: ${tail || `exit code ${exitCode}`}`);
 
                 // Surface failure as a proactive message so it doesn't get lost.
                 const failureText =
@@ -134,6 +143,7 @@ export async function spawnJob(
             live.delete(jobId);
             const msg = err instanceof Error ? err.message : String(err);
             updateJob(jobId, "failed", null, msg);
+            console.error(`[jobs] error ${jobId}: ${msg}`);
             const failurePayload: ProactivePayload = {
                 source: "job_failure",
                 text: `Background task failed to start: ${msg}\nInstruction: ${instruction}`,
