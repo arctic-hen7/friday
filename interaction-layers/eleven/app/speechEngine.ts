@@ -7,14 +7,17 @@
 //   2. onTranscript:  open the orchestrator bridge if needed; forward the
 //                     latest user turn; build an async iterable that yields
 //                     `assistant_chunk` text until `final:true`, hand to
-//                     `session.sendResponse`.
+//                     `session.sendResponse`. Also register a ProactivePlayer
+//                     for this conversation so subsequent assistant_proactive
+//                     messages can stream audio back to the browser.
 //   3. on user speech interrupt (Eleven's `signal`): send `abort` to
 //                     orchestrator.
 //   4. onClose:       close the orchestrator WS (triggers detach on the other
-//                     side).
+//                     side) and dispose the ProactivePlayer.
 //
-// `assistant_proactive` messages are received but DROPPED in stage 1.
-// Proactive push into a live voice conversation is stage 1.5.
+// Proactive messages: routed to a per-conversation ProactivePlayer which
+// drives a side-channel ElevenLabs TTS WebSocket and streams audio to the
+// browser via /api/proactive/ws.
 
 import type { Server as HttpServer } from "node:http";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
@@ -22,6 +25,7 @@ import { optionalEnv, requiredEnv } from "./env";
 import { isConversationMuted, setConversationMuted } from "./muteRegistry";
 import { attachSession, orchestratorWsUrl } from "./orchestrator";
 import { getActiveSessionId } from "./activeSession";
+import { ProactivePlayer, registerPlayer, unregisterPlayer } from "./proactivePlayer";
 
 export const SPEECH_ENGINE_WS_PATH = "/api/speech-engine/ws";
 
@@ -64,15 +68,12 @@ export async function createConversationToken() {
 }
 
 // ---------- Per-Eleven-conversation orchestrator bridge ----------
-//
-// Holds the in-flight WS state for one Eleven conversation. Inbound messages
-// from the orchestrator are demultiplexed: assistant_chunk text is pushed
-// into the currently-active turn's queue; assistant_proactive is dropped.
 
 type Bridge = {
     ws: WebSocket;
     sessionId: string;
     activeTurn: TurnQueue | null;
+    player: ProactivePlayer;          // streams proactive TTS for this conv
     ready: Promise<void>;
 };
 
@@ -115,18 +116,28 @@ function makeTurnQueue(): TurnQueue {
     };
 }
 
-async function openBridge(sessionId: string): Promise<Bridge> {
+async function openBridge(sessionId: string, conversationId: string): Promise<Bridge> {
     const token = await attachSession(sessionId, ELEVEN_SYSTEM_PROMPT_FRAGMENT);
     const ws = new WebSocket(orchestratorWsUrl(token));
+    const player = new ProactivePlayer(conversationId);
+    registerPlayer(conversationId, player);
 
     const bridge: Bridge = {
         ws,
         sessionId,
         activeTurn: null,
+        player,
         ready: new Promise<void>((resolve, reject) => {
             ws.addEventListener("open", () => resolve(), { once: true });
             ws.addEventListener("error", (e) => reject(new Error(`orchestrator ws error: ${String(e)}`)), { once: true });
         }),
+    };
+
+    // When the client tells us the user has spoken during proactive playback,
+    // mirror that as a real abort to the orchestrator + flip deliverability.
+    player.onClientAbort = () => {
+        sendBridge(bridge, { type: "abort", turnId: "current", reason: "proactive_user_interrupt" });
+        sendBridge(bridge, { type: "deliverability", deliverable: false, reason: "user_speaking" });
     };
 
     ws.addEventListener("message", (ev) => {
@@ -145,11 +156,12 @@ async function openBridge(sessionId: string): Promise<Bridge> {
             return;
         }
         if (msg.type === "assistant_proactive") {
-            // Stage 1: drop. Eleven push support lands in stage 1.5.
             const preview = (msg.text ?? "").slice(0, 80).replace(/\s+/g, " ");
             console.log(
-                `[eleven] DROPPED proactive chunk (turn=${msg.turnId} final=${msg.final} len=${(msg.text ?? "").length})${preview ? ` "${preview}${preview.length >= 80 ? "…" : ""}"` : ""}`,
+                `[eleven] proactive chunk (turn=${msg.turnId} final=${msg.final} len=${(msg.text ?? "").length})` +
+                (preview ? ` "${preview}${preview.length >= 80 ? "…" : ""}"` : ""),
             );
+            bridge.player.pushChunk(msg.turnId, msg.text ?? "", !!msg.final);
             return;
         }
         if (msg.type === "session_info") {
@@ -208,11 +220,18 @@ export function attachSpeechEngine(server: HttpServer): void {
                 return;
             }
 
+            const conversationId = session.conversationId;
+            if (!conversationId) {
+                console.warn("[eleven] onTranscript without conversationId; cannot register proactive player");
+                await session.sendResponse("");
+                return;
+            }
+
             // Lazy bridge open so empty Eleven connections don't hold a slot.
             let bridge = bridges.get(session as unknown as object);
             if (!bridge) {
                 try {
-                    bridge = await openBridge(sessionId);
+                    bridge = await openBridge(sessionId, conversationId);
                     await bridge.ready;
                     bridges.set(session as unknown as object, bridge);
                 } catch (err) {
@@ -234,6 +253,12 @@ export function attachSpeechEngine(server: HttpServer): void {
                 await session.sendResponse("");
                 return;
             }
+
+            // Any in-flight proactive must be killed when a new user transcript
+            // lands — the user has just spoken, so deliverability is false until
+            // the reply turn completes.
+            bridge.player.abort();
+            sendBridge(bridge, { type: "deliverability", deliverable: false, reason: "user_turn" });
 
             const turn = makeTurnQueue();
             bridge.activeTurn = turn;
@@ -257,6 +282,8 @@ export function attachSpeechEngine(server: HttpServer): void {
             } finally {
                 signal.removeEventListener("abort", onAbort);
                 if (bridge.activeTurn === turn) bridge.activeTurn = null;
+                // Reply finished (or was aborted) — deliverable again.
+                sendBridge(bridge, { type: "deliverability", deliverable: true });
             }
         },
 
@@ -267,6 +294,7 @@ export function attachSpeechEngine(server: HttpServer): void {
                 try { b.ws.close(1000, "eleven_close"); } catch { /* ignore */ }
                 bridges.delete(session as unknown as object);
             }
+            if (session.conversationId) unregisterPlayer(session.conversationId);
             console.log(`[eleven] speech-engine session ended: ${session.conversationId}`);
         },
 
@@ -277,6 +305,7 @@ export function attachSpeechEngine(server: HttpServer): void {
                 try { b.ws.close(1006, "eleven_disconnect"); } catch { /* ignore */ }
                 bridges.delete(session as unknown as object);
             }
+            if (session.conversationId) unregisterPlayer(session.conversationId);
             console.log(`[eleven] speech-engine session disconnected: ${session.conversationId}`);
         },
 
@@ -285,4 +314,3 @@ export function attachSpeechEngine(server: HttpServer): void {
         },
     });
 }
-

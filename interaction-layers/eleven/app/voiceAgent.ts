@@ -1,5 +1,6 @@
 import { useConversation } from "@elevenlabs/react";
 import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes } from "react";
+import { ProactiveListener } from "./proactiveListener";
 
 export type TranscriptMessage = {
     id: string;
@@ -188,6 +189,7 @@ export function useVoiceAgent(): VoiceAgentState {
     const pressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const processingTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const longPressTriggeredRef = useRef(false);
+    const proactiveRef = useRef<ProactiveListener | null>(null);
 
     function clearProcessingTimer() {
         if (processingTimerRef.current) {
@@ -208,11 +210,19 @@ export function useVoiceAgent(): VoiceAgentState {
             setError(undefined);
             setIsStarting(false);
             resetProcessingState();
+
+            // Spin up the proactive listener so out-of-band TTS from the
+            // orchestrator can play through this same conversation.
+            proactiveRef.current?.stop();
+            proactiveRef.current = new ProactiveListener(conversationId);
+            proactiveRef.current.start();
         },
         onDisconnect: () => {
             setConversationId(undefined);
             setIsStarting(false);
             resetProcessingState();
+            proactiveRef.current?.stop();
+            proactiveRef.current = null;
         },
         onError: message => {
             setError(message);
@@ -243,6 +253,12 @@ export function useVoiceAgent(): VoiceAgentState {
         },
         onVadScore: ({ vadScore }: VadScorePayload) => {
             if (vadScore >= VAD_SPEECH_THRESHOLD) {
+                // If a proactive is currently playing, the user has just cut
+                // in — kill playback immediately and mark the orchestrator
+                // turn as user-interrupted.
+                if (proactiveRef.current?.isPlaying()) {
+                    proactiveRef.current.abort();
+                }
                 clearProcessingTimer();
                 heardSpeechRef.current = true;
                 setIsProcessing(false);
@@ -279,6 +295,8 @@ export function useVoiceAgent(): VoiceAgentState {
         return () => {
             clearLongPressTimer();
             clearProcessingTimer();
+            proactiveRef.current?.stop();
+            proactiveRef.current = null;
         };
     }, []);
 

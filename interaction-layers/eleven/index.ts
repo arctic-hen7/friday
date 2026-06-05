@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { createRequestHandler } from "@react-router/express";
 import type { ServerBuild } from "react-router";
 import { attachSpeechEngine, SPEECH_ENGINE_WS_PATH } from "./app/speechEngine";
+import { attachProactiveWs, PROACTIVE_WS_PATH } from "./app/proactiveWs";
 
 const DEVELOPMENT = process.env.NODE_ENV !== "production";
 const PORT = Number.parseInt(process.env.ELEVEN_PORT || "5000", 10);
@@ -62,6 +63,7 @@ async function start() {
     const httpServer = createHttpServer(app);
 
     attachSpeechEngine(httpServer);
+    attachProactiveWs(httpServer);
 
     app.disable("x-powered-by");
     app.use(compression() as unknown as RequestHandler);
@@ -83,6 +85,7 @@ async function start() {
         console.log(`Gateway listening on http://localhost:${PORT}`);
         console.log(`React Router mode: ${DEVELOPMENT ? "development" : "production"}`);
         console.log(`Speech Engine WebSocket path: ${SPEECH_ENGINE_WS_PATH}`);
+        console.log(`Proactive audio WebSocket path: ${PROACTIVE_WS_PATH}`);
     });
 }
 
