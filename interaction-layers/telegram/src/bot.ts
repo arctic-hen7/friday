@@ -2,9 +2,9 @@
 //
 // Each authorised Telegram chat can attach to at most one Friday session at a
 // time. While attached, plain text messages from the user become orchestrator
-// `user_message`s; assistant streaming chunks are accumulated into a single
-// Telegram message that gets edited as the model writes. Proactive turns are
-// posted as fresh messages.
+// `user_message`s; assistant chunks are buffered until the orchestrator signals
+// `final: true`, then posted as one Telegram message (split only if the result
+// overflows Telegram's hard size cap). Proactive turns work the same way.
 //
 // Telegram is treated as always-deliverable for the orchestrator's purposes —
 // the inbox handles offline gaps, so we don't try to model presence here.
@@ -30,13 +30,9 @@ const SYSTEM_PROMPT_FRAGMENT = `You are speaking to the user via Telegram text c
 - Lists are fine when genuinely useful; prefer short prose otherwise.
 - Never reference visual or voice elements — this is a text chat.`;
 
-// Telegram caps text messages at 4096 chars. Stay well under to leave room for
-// the "(continued)" suffix we tack on when a turn overflows.
-const TG_MAX_TEXT = 3900;
-
-// Minimum gap between edit_message_text calls per streaming turn. Telegram
-// silently rate-limits aggressive edits; ~800ms is a comfortable middle.
-const EDIT_THROTTLE_MS = 800;
+// Telegram caps text messages at 4096 chars. Stay a little under so we never
+// surprise the API with a borderline payload.
+const TG_MAX_TEXT = 4000;
 
 // Server -> client wire types from the orchestrator.
 type OrchestratorMsg =
@@ -48,13 +44,10 @@ type OrchestratorMsg =
 type StreamingTurn = {
     turnId: string;
     isProactive: boolean;
-    // The Telegram message we're currently editing. We may spill to additional
-    // messages when the text exceeds TG_MAX_TEXT.
-    currentMessageId: number;
-    currentText: string;
-    lastEditAt: number;
-    lastEditedText: string;
-    pendingEditTimer: ReturnType<typeof setTimeout> | null;
+    // Accumulated chunks. Held until the orchestrator says `final: true`, then
+    // flushed as a single Telegram message (or split on whitespace if the
+    // accumulated text exceeds TG_MAX_TEXT).
+    buffer: string;
 };
 
 type ChatState = {
@@ -447,9 +440,9 @@ export class TelegramBot {
 
         // A new user message implicitly aborts any in-flight turn the user
         // didn't wait out. The orchestrator records markers as appropriate.
+        // Any buffered partial output is discarded — we never half-deliver.
         if (chat.turn) {
             this.sendWs(chat, { type: "abort", turnId: chat.turn.turnId, reason: "user_message" });
-            this.finalizePendingEdit(chat);
             chat.turn = null;
         }
 
@@ -494,7 +487,6 @@ export class TelegramBot {
             const wasAttached = chat.sessionId;
             chat.ws = null;
             chat.wsReady = false;
-            this.finalizePendingEdit(chat);
             chat.turn = null;
             // Only surface the disconnect if the user hadn't asked for it.
             if (wasAttached && !this.stopping) {
@@ -524,7 +516,6 @@ export class TelegramBot {
         chat.wsReady = false;
         chat.sessionId = null;
         chat.sessionLabel = null;
-        this.finalizePendingEdit(chat);
         chat.turn = null;
     }
 
@@ -563,139 +554,34 @@ export class TelegramBot {
         isProactive: boolean,
     ): Promise<void> {
         let turn = chat.turn;
-        // New turn (or one whose id changed under us) — open a fresh Telegram
-        // message we'll edit as text streams in.
         if (!turn || turn.turnId !== msg.turnId) {
-            this.finalizePendingEdit(chat);
-            chat.turn = null;
-            if (!msg.text && msg.final) {
-                // Empty final-only chunk — nothing to render.
-                return;
-            }
-            const placeholder = isProactive ? "…" : "…";
-            let placeholderMsg: TgMessage;
-            try {
-                placeholderMsg = await this.tg.sendMessage({
-                    chatId: chat.chatId,
-                    text: placeholder,
-                });
-            } catch (err) {
-                console.error("[telegram] failed to open turn message:", err);
-                return;
-            }
-            turn = {
-                turnId: msg.turnId,
-                isProactive,
-                currentMessageId: placeholderMsg.message_id,
-                currentText: "",
-                lastEditAt: 0,
-                lastEditedText: placeholder,
-                pendingEditTimer: null,
-            };
+            // New turn — start a fresh buffer. Anything in-flight from a
+            // previous turn is dropped; the orchestrator only ever finalises
+            // one turn at a time.
+            turn = { turnId: msg.turnId, isProactive, buffer: "" };
             chat.turn = turn;
         }
 
-        if (msg.text) {
-            turn.currentText += msg.text;
-            await this.maybeFlushEdit(chat, turn, msg.final);
-        } else if (msg.final) {
-            await this.maybeFlushEdit(chat, turn, true);
-        }
+        if (msg.text) turn.buffer += msg.text;
+        if (!msg.final) return;
 
-        if (msg.final) {
-            // Drop the turn — orchestrator will start a new one for any
-            // follow-up. Any pending edit was flushed synchronously above.
-            chat.turn = null;
-        }
-    }
+        // Detach the turn before any awaits so a follow-up turn arriving
+        // mid-flush can't append to the buffer we're about to send.
+        chat.turn = null;
 
-    private async maybeFlushEdit(
-        chat: ChatState,
-        turn: StreamingTurn,
-        force: boolean,
-    ): Promise<void> {
-        if (turn.pendingEditTimer) {
-            clearTimeout(turn.pendingEditTimer);
-            turn.pendingEditTimer = null;
-        }
-        const now = Date.now();
-        const elapsed = now - turn.lastEditAt;
-        if (!force && elapsed < EDIT_THROTTLE_MS) {
-            const delay = EDIT_THROTTLE_MS - elapsed;
-            turn.pendingEditTimer = setTimeout(() => {
-                turn.pendingEditTimer = null;
-                void this.flushEdit(chat, turn);
-            }, delay);
-            return;
-        }
-        await this.flushEdit(chat, turn);
-    }
+        const text = turn.buffer.trim();
+        if (!text) return;
 
-    private async flushEdit(chat: ChatState, turn: StreamingTurn): Promise<void> {
-        if (chat.turn !== turn && turn.currentText === turn.lastEditedText) return;
-
-        // Slice off anything that overflows the current Telegram message, then
-        // post the overflow as a fresh message and continue editing that.
-        while (turn.currentText.length > TG_MAX_TEXT) {
-            const head = turn.currentText.slice(0, TG_MAX_TEXT);
-            await this.safeEdit(chat.chatId, turn.currentMessageId, head, turn);
-            turn.lastEditedText = head;
-
-            const tail = turn.currentText.slice(TG_MAX_TEXT);
+        for (const piece of splitForTelegram(text)) {
             try {
-                const next = await this.tg.sendMessage({
-                    chatId: chat.chatId,
-                    text: tail.length > 0 ? tail : "…",
-                });
-                turn.currentMessageId = next.message_id;
-                turn.currentText = tail;
-                turn.lastEditedText = tail.length > 0 ? tail : "…";
+                await this.tg.sendMessage({ chatId: chat.chatId, text: piece });
             } catch (err) {
-                console.error("[telegram] failed to open continuation message:", err);
+                console.error(
+                    `[telegram] failed to deliver assistant turn (chat=${chat.chatId}):`,
+                    err,
+                );
                 return;
             }
-        }
-
-        const text = turn.currentText || "…";
-        if (text === turn.lastEditedText) {
-            turn.lastEditAt = Date.now();
-            return;
-        }
-        await this.safeEdit(chat.chatId, turn.currentMessageId, text, turn);
-        turn.lastEditedText = text;
-        turn.lastEditAt = Date.now();
-    }
-
-    private async safeEdit(
-        chatId: number,
-        messageId: number,
-        text: string,
-        turn: StreamingTurn,
-    ): Promise<void> {
-        try {
-            await this.tg.editMessageText({ chatId, messageId, text });
-        } catch (err) {
-            if (err instanceof TelegramError) {
-                // Telegram returns a 400 with this description when the new
-                // text matches what's already shown — harmless.
-                if (err.description.includes("message is not modified")) return;
-                if (err.retryAfter) {
-                    await sleep(err.retryAfter * 1000);
-                    // Defer the next attempt to the streaming loop.
-                    turn.lastEditAt = Date.now();
-                    return;
-                }
-            }
-            console.warn("[telegram] editMessageText failed:", err);
-        }
-    }
-
-    private finalizePendingEdit(chat: ChatState): void {
-        const turn = chat.turn;
-        if (!turn) return;
-        if (turn.pendingEditTimer) {
-            clearTimeout(turn.pendingEditTimer);
-            turn.pendingEditTimer = null;
         }
     }
 
@@ -712,6 +598,29 @@ export class TelegramBot {
 
 function shortId(id: string): string {
     return id.slice(0, 8);
+}
+
+// Split a finalised assistant turn into Telegram-sized pieces. Prefer to break
+// at paragraph boundaries, then sentence-ending whitespace, then any
+// whitespace, before falling back to a hard cut.
+function splitForTelegram(text: string): string[] {
+    if (text.length <= TG_MAX_TEXT) return [text];
+    const pieces: string[] = [];
+    let rest = text;
+    while (rest.length > TG_MAX_TEXT) {
+        const window = rest.slice(0, TG_MAX_TEXT);
+        const minCut = Math.floor(TG_MAX_TEXT * 0.5);
+        let cut = window.lastIndexOf("\n\n");
+        if (cut < minCut) cut = window.lastIndexOf("\n");
+        if (cut < minCut) cut = window.lastIndexOf(". ");
+        if (cut >= minCut) cut += 1; // keep the period on the trailing edge
+        if (cut < minCut) cut = window.lastIndexOf(" ");
+        if (cut < minCut) cut = TG_MAX_TEXT;
+        pieces.push(rest.slice(0, cut).trimEnd());
+        rest = rest.slice(cut).trimStart();
+    }
+    if (rest.length > 0) pieces.push(rest);
+    return pieces;
 }
 
 function defaultSessionLabel(): string {
