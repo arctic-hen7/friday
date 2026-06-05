@@ -7,4 +7,7 @@ export default defineConfig({
     resolve: {
         tsconfigPaths: true,
     },
+    server: process.env.NODE_ENV == "production" ? undefined : {
+        allowedHosts: true,
+    }
 });
