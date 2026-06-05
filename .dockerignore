@@ -1,0 +1,33 @@
+# Build context for the `primary` service (user.Dockerfile / primary.Dockerfile).
+# Neither Dockerfile performs a COPY — the image is built from base + RUN
+# layers — so this list only needs to keep the context from being slow to
+# tar up. Be aggressive.
+
+.git
+.github
+.gitignore
+.claude
+
+# Per-service trees — each has its own build context, nothing here gets used
+# by the primary build.
+orchestrator
+interaction-layers
+
+# Runtime-mounted directories.
+workspace
+codex
+
+# Secrets / per-user files.
+.env
+.env.*
+!.env.example
+docker-compose.override.yml
+user.Dockerfile
+deploy.sh
+
+# Docs / editor / OS noise.
+README.md
+*.md
+.idea
+.vscode
+.DS_Store

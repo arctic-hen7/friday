@@ -1,14 +1,15 @@
-# node_modules is reinstalled inside the image via bun.lock.
+# node_modules is reinstalled in the `deps` stage from bun.lock.
 node_modules
 
-# Build outputs — the `build` stage produces these inside the image.
-build
-dist
-out
+# Local sqlite state — the production container uses the `orchestrator-data`
+# named volume instead.
+data
 
-# Vite / React Router caches.
+# Build / cache artefacts.
+dist
+build
+out
 .cache
-.react-router
 *.tsbuildinfo
 
 # Logs.
