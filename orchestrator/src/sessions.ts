@@ -37,6 +37,11 @@ export function touchSession(id: string): void {
     db.run("UPDATE sessions SET last_active_at = ? WHERE id = ?", [nowIso(), id]);
 }
 
+export function deleteSession(id: string): void {
+    // messages cascade via FK; jobs.session_id is set NULL by FK rule.
+    db.run("DELETE FROM sessions WHERE id = ?", [id]);
+}
+
 // ---------- Message history ----------
 
 export function loadHistory(sessionId: string): Message[] {

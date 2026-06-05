@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "./+types/home";
 import { useVoiceAgent, type VoiceControlState } from "../voiceAgent";
 import { Orb, PALETTES, type OrbState } from "../orb";
@@ -51,8 +51,13 @@ function formatStamp(ms: number) {
     return `${m}:${s}`;
 }
 
-function VoiceAgent() {
-    const { control, sessionActive, error, transcript, getInputVolume, getOutputVolume, endConversation } = useVoiceAgent();
+type VoiceAgentProps = {
+    onEnd: (opts: { deleteSession: boolean }) => Promise<void>;
+    ensureSession: () => Promise<void>;
+};
+
+function VoiceAgent({ onEnd, ensureSession }: VoiceAgentProps) {
+    const { control, sessionActive, error, transcript, getInputVolume, getOutputVolume, endConversation } = useVoiceAgent({ ensureSession });
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const orbRef = useRef<Orb | null>(null);
     const railBodyRef = useRef<HTMLDivElement | null>(null);
@@ -85,7 +90,6 @@ function VoiceAgent() {
         orbRef.current?.setState(ORB_STATE[control.state]);
     }, [control.state]);
 
-    // Feed mic / agent volume into the orb so particles bounce with the audio.
     useEffect(() => {
         const orb = orbRef.current;
         if (!orb || !live) {
@@ -111,7 +115,6 @@ function VoiceAgent() {
         else orb.setRing(null);
     }, [control.state]);
 
-    // Session timer — runs while a session is active.
     const [elapsed, setElapsed] = useState(0);
     const startRef = useRef<number | null>(null);
     useEffect(() => {
@@ -159,6 +162,14 @@ function VoiceAgent() {
 
     const handlers = control.buttonHandlers;
 
+    const handleEnd = useCallback(
+        (deleteSession: boolean) => {
+            endConversation();
+            void onEnd({ deleteSession });
+        },
+        [endConversation, onEnd],
+    );
+
     return (
         <div className="app">
             <header className="topbar">
@@ -194,16 +205,7 @@ function VoiceAgent() {
 
                     {error ? <div className="error-panel">{error}</div> : null}
 
-                    {sessionActive ? (
-                        <button
-                            type="button"
-                            className="end-conversation"
-                            onClick={endConversation}
-                        >
-                            <span className="end-conversation-glyph" aria-hidden="true" />
-                            End conversation
-                        </button>
-                    ) : null}
+                    {sessionActive ? <EndConversationSplit onEnd={handleEnd} /> : null}
                 </main>
 
                 <aside className="rail">
@@ -241,16 +243,153 @@ function VoiceAgent() {
     );
 }
 
+type EndConversationSplitProps = {
+    onEnd: (deleteSession: boolean) => void;
+};
+
+function EndConversationSplit({ onEnd }: EndConversationSplitProps) {
+    const [menuOpen, setMenuOpen] = useState(false);
+    const wrapRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!menuOpen) return;
+        function onDown(ev: PointerEvent) {
+            if (!wrapRef.current) return;
+            if (!wrapRef.current.contains(ev.target as Node)) setMenuOpen(false);
+        }
+        function onKey(ev: KeyboardEvent) {
+            if (ev.key === "Escape") setMenuOpen(false);
+        }
+        window.addEventListener("pointerdown", onDown);
+        window.addEventListener("keydown", onKey);
+        return () => {
+            window.removeEventListener("pointerdown", onDown);
+            window.removeEventListener("keydown", onKey);
+        };
+    }, [menuOpen]);
+
+    return (
+        <div className="end-split" ref={wrapRef}>
+            <button
+                type="button"
+                className="end-split-main"
+                onClick={() => onEnd(true)}
+            >
+                <span className="end-split-glyph" aria-hidden="true" />
+                End conversation
+            </button>
+            <button
+                type="button"
+                className="end-split-toggle"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label="More end-conversation options"
+                onClick={() => setMenuOpen(open => !open)}
+            >
+                <svg
+                    className="end-split-chevron"
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    aria-hidden="true"
+                >
+                    <path d="M1.5 3.5 L5 7 L8.5 3.5" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+            </button>
+            {menuOpen ? (
+                <div className="end-split-menu" role="menu">
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className="end-split-menu-item"
+                        onClick={() => { setMenuOpen(false); onEnd(false); }}
+                    >
+                        End but keep session
+                        <span className="end-split-menu-hint">
+                            Leaves the session in history so you can return to it
+                        </span>
+                    </button>
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 function HomeInner() {
     const { active, resolved, set } = useActiveSession();
+    const [picking, setPicking] = useState(false);
+    const activeRef = useRef<string | null>(null);
+    activeRef.current = active;
+
+    // When the tab is being closed, fire-and-forget a delete request for the
+    // current session. `pagehide` is more reliable than `beforeunload` and
+    // fires on Safari iOS too. Network drops don't trigger pagehide, so true
+    // disconnects still leave the session intact (per user preference).
+    useEffect(() => {
+        function onPageHide() {
+            const id = activeRef.current;
+            if (!id) return;
+            try {
+                const body = new Blob(
+                    [JSON.stringify({ delete: true, sessionId: id })],
+                    { type: "application/json" },
+                );
+                navigator.sendBeacon("/api/end-session", body);
+            } catch { /* ignore */ }
+        }
+        window.addEventListener("pagehide", onPageHide);
+        return () => window.removeEventListener("pagehide", onPageHide);
+    }, []);
+
+    // End the current conversation. We don't create a successor up-front —
+    // the next press of the orb will lazily provision one via ensureSession.
+    const endConversation = useCallback(
+        async ({ deleteSession }: { deleteSession: boolean }) => {
+            const previousId = activeRef.current;
+            try {
+                await fetch("/api/end-session", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ delete: deleteSession, sessionId: previousId }),
+                });
+            } catch (err) {
+                console.warn("[home] end-session failed:", err);
+            }
+            await set(null);
+        },
+        [set],
+    );
+
+    // Provision a session on demand. The orb's first press calls this before
+    // opening the gateway WS so the orchestrator has a session to attach to.
+    const ensureSession = useCallback(async () => {
+        if (activeRef.current) return;
+        const res = await fetch("/api/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: `Voice ${new Date().toLocaleString()}` }),
+        });
+        if (!res.ok) throw new Error(`Couldn't create a session (HTTP ${res.status})`);
+        const row = (await res.json()) as { id: string };
+        await set(row.id);
+    }, [set]);
+
     if (!resolved) return null;
-    if (!active) return <SessionPicker onPicked={(id) => void set(id)} />;
+
+    if (picking) {
+        return (
+            <SessionPicker
+                onPicked={(id) => { setPicking(false); void set(id); }}
+            />
+        );
+    }
+
     return (
         <>
-            <VoiceAgent />
+            <VoiceAgent onEnd={endConversation} ensureSession={ensureSession} />
             <button
                 className="session-switch"
-                onClick={() => void set(null)}
+                onClick={() => setPicking(true)}
                 title="Switch to a different session"
             >
                 Switch session

@@ -71,7 +71,15 @@ function getControlCopy(state: VoiceControlState): VoiceControlCopy {
     }
 }
 
-export function useVoiceAgent(): VoiceAgentState {
+export type UseVoiceAgentOptions = {
+    // Called before the gateway WS is opened. Used to lazily provision an
+    // orchestrator session on the first orb press so the user lands on the
+    // root URL inside a "new conversation" UI without spending a session id
+    // until they actually intend to talk.
+    ensureSession?: () => Promise<void>;
+};
+
+export function useVoiceAgent(options: UseVoiceAgentOptions = {}): VoiceAgentState {
     const [phase, setPhase] = useState<VoicePhase>("idle");
     const [error, setError] = useState<string>();
     const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
@@ -79,6 +87,10 @@ export function useVoiceAgent(): VoiceAgentState {
     const micLevelRef = useRef(0);
     const outputLevelRef = useRef(0);
     const pendingStartRef = useRef(false);
+    // Held in a ref so a re-rendered callback identity doesn't churn the
+    // memoized handlers below.
+    const ensureSessionRef = useRef(options.ensureSession);
+    ensureSessionRef.current = options.ensureSession;
 
     // Lazily create the client. Listener handles are stable through refs so we
     // don't need to recreate it on rerender.
@@ -103,6 +115,12 @@ export function useVoiceAgent(): VoiceAgentState {
         if (phase === "connecting") return;
         if (phase === "idle" || phase === "error") {
             setError(undefined);
+            try {
+                await ensureSessionRef.current?.();
+            } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+                return;
+            }
             await client.connect();
         }
     }, [phase]);

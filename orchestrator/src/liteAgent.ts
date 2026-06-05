@@ -73,14 +73,12 @@ export async function runLiteAgent(args: LiteAgentArgs): Promise<void> {
 
             const parts = chunk.candidates?.[0]?.content?.parts ?? [];
             for (const part of parts) {
-                if (part.text) {
-                    args.onText(part.text);
-                    assistantParts.push({ text: part.text });
-                }
-                if (part.functionCall) {
-                    pendingCalls.push(part.functionCall);
-                    assistantParts.push({ functionCall: part.functionCall });
-                }
+                if (part.text) args.onText(part.text);
+                if (part.functionCall) pendingCalls.push(part.functionCall);
+                // Echo the part verbatim — Gemini 3 rejects subsequent
+                // requests if the `thoughtSignature` on a functionCall part
+                // is dropped when the call is fed back in history.
+                if (part.text || part.functionCall) assistantParts.push(part);
             }
         }
 

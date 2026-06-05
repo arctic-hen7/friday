@@ -72,3 +72,14 @@ export async function attachSession(
 export function orchestratorWsUrl(token: string): string {
     return `${wsBase()}/ws?token=${encodeURIComponent(token)}`;
 }
+
+export async function deleteSession(sessionId: string): Promise<void> {
+    const res = await fetch(
+        `${orchestratorBaseUrl()}/sessions/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE" },
+    );
+    // 404 means the session was already gone — treat as success.
+    if (!res.ok && res.status !== 404) {
+        throw new Error(`orchestrator delete returned ${res.status}`);
+    }
+}

@@ -6,5 +6,6 @@ export default [
         route("status", "routes/api/status.ts"),
         route("sessions", "routes/api/sessions.ts"),
         route("select-session", "routes/api/select-session.ts"),
+        route("end-session", "routes/api/end-session.ts"),
     ]),
 ] satisfies RouteConfig;

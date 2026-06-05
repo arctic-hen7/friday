@@ -48,6 +48,16 @@ const TTS_MODEL = optionalEnv("ELEVEN_TTS_MODEL", "eleven_turbo_v2_5");
 const TTS_SAMPLE_RATE = 22050;
 const TTS_OUTPUT_FORMAT = `pcm_${TTS_SAMPLE_RATE}`;
 
+function getTtsVoiceSettings(): Record<string, unknown> {
+    const settings: Record<string, unknown> = { stability: 0.5, similarity_boost: 0.8 };
+    const rawSpeed = optionalEnv("ELEVENLABS_VOICE_SPEED");
+    if (rawSpeed) {
+        const speed = Number.parseFloat(rawSpeed);
+        if (Number.isFinite(speed)) settings.speed = speed;
+    }
+    return settings;
+}
+
 let elevenlabs: ElevenLabsClient | undefined;
 function getElevenLabs(): ElevenLabsClient {
     elevenlabs ??= new ElevenLabsClient({ apiKey: requiredEnv("ELEVENLABS_API_KEY") });
@@ -313,7 +323,7 @@ function openTtsTurn(session: Session, turnId: string): void {
         try {
             ws.send(JSON.stringify({
                 text: " ",
-                voice_settings: { stability: 0.5, similarity_boost: 0.8 },
+                voice_settings: getTtsVoiceSettings(),
                 generation_config: { chunk_length_schedule: [120, 160, 250, 290] },
                 xi_api_key: apiKey,
             }));

@@ -9,6 +9,7 @@
 import "./db"; // initialises DB on import
 import {
     createSession,
+    deleteSession,
     dropLive,
     getSession,
     listSessions,
@@ -130,6 +131,23 @@ async function handleRest(req: Request, url: URL): Promise<Response | null> {
         }
         // Also release any standing reservation (mint-without-upgrade).
         releaseReservation(id);
+        return json({ ok: true });
+    }
+
+    const deleteMatch = pathname.match(/^\/sessions\/([^/]+)$/);
+    if (deleteMatch && req.method === "DELETE") {
+        const id = deleteMatch[1]!;
+        const row = getSession(id);
+        if (!row) return json({ error: "not_found" }, { status: 404 });
+        // Force-detach any live attachment before tearing down state.
+        const live = liveSession(id);
+        if (live?.attached) {
+            try { live.attached.ws.close(1000, "session_deleted"); } catch { /* ignore */ }
+            onIlDisconnect(live);
+        }
+        dropLive(id);
+        releaseReservation(id);
+        deleteSession(id);
         return json({ ok: true });
     }
 
