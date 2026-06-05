@@ -7,5 +7,7 @@ export default [
         route("conversation-token", "routes/api/conversation-token.ts"),
         route("mute", "routes/api/mute.ts"),
         route("unmute", "routes/api/unmute.ts"),
+        route("sessions", "routes/api/sessions.ts"),
+        route("select-session", "routes/api/select-session.ts"),
     ]),
 ] satisfies RouteConfig;

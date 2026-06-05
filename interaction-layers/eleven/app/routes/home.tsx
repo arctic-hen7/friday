@@ -3,6 +3,7 @@ import type { Route } from "./+types/home";
 import { ConversationProvider } from "@elevenlabs/react";
 import { useVoiceAgent, type VoiceControlState } from "../voiceAgent";
 import { Orb, PALETTES, type OrbRing, type OrbState } from "../orb";
+import { SessionPicker, useActiveSession } from "../sessionPicker";
 
 export function meta({ }: Route.MetaArgs) {
     return [
@@ -270,10 +271,24 @@ function VoiceAgent() {
     );
 }
 
-export default function Home() {
+function HomeInner() {
+    const { active, resolved, set } = useActiveSession();
+    if (!resolved) return null;
+    if (!active) return <SessionPicker onPicked={(id) => void set(id)} />;
     return (
         <ConversationProvider>
             <VoiceAgent />
+            <button
+                className="session-switch"
+                onClick={() => void set(null)}
+                title="Switch to a different session"
+            >
+                Switch session
+            </button>
         </ConversationProvider>
     );
+}
+
+export default function Home() {
+    return <HomeInner />;
 }

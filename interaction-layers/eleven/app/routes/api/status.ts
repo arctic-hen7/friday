@@ -1,11 +1,11 @@
 import { getGatewayConfig, jsonResponse } from "~/speechEngine";
+import { orchestratorBaseUrl } from "~/orchestrator";
 
 export async function loader() {
-    const { llmModel, speechEngineId } = getGatewayConfig();
-
+    const { speechEngineId } = getGatewayConfig();
     return jsonResponse({
         ok: true,
         speechEngineId,
-        model: llmModel,
+        orchestrator: orchestratorBaseUrl(),
     });
 }

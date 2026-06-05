@@ -1,37 +1,83 @@
+# Friday compose stack — designed for Podman (rootless).
+#
+# Notes:
+#   - Bind mounts use `:z` so SELinux relabels work in userspace setups. Drop
+#     `:z` on systems without SELinux if Podman warns.
+#   - The orchestrator talks to the primary container via `podman exec`. It
+#     mounts the host Podman API socket so the podman-remote client inside
+#     can drive it. On a typical rootless setup run:
+#         systemctl --user start podman.socket
+#     and the socket lives at /run/user/<UID>/podman/podman.sock.
+#   - Authentication for Codex is handled on the HOST: run
+#         CODEX_HOME=./codex codex login
+#     so credential files land in the tracked codex/ directory and get
+#     mounted into the primary container.
+
 services:
-  gateway:
+  primary:
     build:
-      context: ./gateway
-      target: production
-    image: friday-gateway:latest
-    container_name: friday-gateway
+      context: .
+      dockerfile: primary.Dockerfile
+    image: friday-primary:latest
+    container_name: friday-primary
     restart: unless-stopped
+    volumes:
+      - ./workspace:/workspace:z
+      - ./codex:/root/.codex:z
+    environment:
+      CODEX_HOME: /root/.codex
+
+  orchestrator:
+    build:
+      context: ./orchestrator
+    image: friday-orchestrator:latest
+    container_name: friday-orchestrator
+    restart: unless-stopped
+    depends_on:
+      - primary
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "6000"
+      FRIDAY_DB_PATH: /data/friday.db
+      PRIMARY_CONTAINER: friday-primary
+      PODMAN_BIN: podman
+      CONTAINER_HOST: unix:///run/podman/podman.sock
+    volumes:
+      - orchestrator-data:/data:z
+      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:/run/podman/podman.sock:z
+    expose:
+      - "6000"
+
+  eleven:
+    build:
+      context: ./interaction-layers/eleven
+      target: production
+    image: friday-il-eleven:latest
+    container_name: friday-il-eleven
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
     env_file:
       - .env
     environment:
       NODE_ENV: production
       PORT: "5000"
-      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ORCHESTRATOR_URL: http://orchestrator:6000
     expose:
       - "5000"
 
-  # cloudflared:
-  #   image: cloudflare/cloudflared:latest
-  #   container_name: cloudflared-friday
-  #   restart: unless-stopped
-  #   command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
-  #   depends_on:
-  #     - gateway
-
-  # TODO: Expose 443 and give Caddy volumes to manage HTTPS too
   caddy:
     image: caddy:2
     container_name: friday-caddy
     restart: unless-stopped
     depends_on:
-      - gateway
+      - eleven
     ports:
       - "80:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,z
+
+volumes:
+  orchestrator-data:
