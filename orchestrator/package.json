@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "NODE_ENV=development bun run --watch ./src/index.ts",
+    "dev": "NODE_ENV=development bun --env-file=../.env run --watch ./src/index.ts",
     "start": "NODE_ENV=production bun run ./src/index.ts",
     "typecheck": "tsc --noEmit"
   },

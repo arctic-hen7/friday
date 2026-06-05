@@ -65,7 +65,7 @@ export async function spawnJob(
 
     // Kick off the subprocess but do NOT await it — we want immediate return.
     const proc = spawn({
-        cmd: [PODMAN_BIN, "exec", PRIMARY_CONTAINER, "codex", "exec", "-o", outFile, instruction],
+        cmd: [PODMAN_BIN, "exec", PRIMARY_CONTAINER, "codex", "exec", "--skip-git-repo-check", "-o", outFile, instruction],
         stdout: "ignore",   // stderr/stdout from codex are noisy; we ignore them
         stderr: "pipe",
     });

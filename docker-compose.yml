@@ -39,7 +39,7 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      PORT: "6000"
+      ORCHESTRATOR_PORT: "6000"
       FRIDAY_DB_PATH: /data/friday.db
       PRIMARY_CONTAINER: friday-primary
       PODMAN_BIN: podman
@@ -63,7 +63,7 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      PORT: "5000"
+      ELEVEN_PORT: "5000"
       ORCHESTRATOR_URL: http://orchestrator:6000
     expose:
       - "5000"

@@ -8,7 +8,7 @@ import type { ServerBuild } from "react-router";
 import { attachSpeechEngine, SPEECH_ENGINE_WS_PATH } from "./app/speechEngine";
 
 const DEVELOPMENT = process.env.NODE_ENV !== "production";
-const PORT = Number.parseInt(process.env.PORT || "5000", 10);
+const PORT = Number.parseInt(process.env.ELEVEN_PORT || "5000", 10);
 
 const root = import.meta.dirname;
 const clientBuildDirectory = resolve(root, "build/client");

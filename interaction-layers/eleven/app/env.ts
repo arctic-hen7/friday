@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const ROOT_ENV_PATH = resolve(import.meta.dirname, "../../.env");
+// Repo-root .env. Path is relative to this file:
+//   interaction-layers/eleven/app/env.ts → ../../../.env
+const ROOT_ENV_PATH = resolve(import.meta.dirname, "../../../.env");
 
 let loaded = false;
 

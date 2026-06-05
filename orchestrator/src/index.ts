@@ -28,7 +28,7 @@ import { bootScheduler } from "./schedules";
 import { getSetting } from "./db";
 import type { ClientToServer, ServerToClient } from "./types";
 
-const PORT = Number(process.env.PORT ?? "6000");
+const PORT = Number(process.env.ORCHESTRATOR_PORT ?? "6000");
 
 // ---------- WS attach tokens ----------
 // Short-lived tokens minted by POST /sessions/:id/attach. The IL must present

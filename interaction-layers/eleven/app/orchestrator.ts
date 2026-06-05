@@ -4,8 +4,22 @@
 
 import { optionalEnv } from "./env";
 
+let logged = false;
+
 export function orchestratorBaseUrl(): string {
-    return optionalEnv("ORCHESTRATOR_URL", "http://orchestrator:6000").replace(/\/$/, "");
+    // Smart default: in production we're inside compose, so reach the
+    // orchestrator container by its service hostname. Locally we always
+    // want localhost.
+    const fallback =
+        process.env.NODE_ENV === "production"
+            ? "http://orchestrator:6000"
+            : "http://localhost:6000";
+    const url = optionalEnv("ORCHESTRATOR_URL", fallback).replace(/\/$/, "");
+    if (!logged) {
+        console.log(`[eleven] orchestrator URL: ${url}`);
+        logged = true;
+    }
+    return url;
 }
 
 function wsBase(): string {

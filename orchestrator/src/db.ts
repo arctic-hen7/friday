@@ -2,7 +2,11 @@ import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const DB_PATH = process.env.FRIDAY_DB_PATH ?? "/data/friday.db";
+// Default differs by env: containerised prod writes to /data; local dev writes
+// to ./data/friday.db inside the orchestrator project.
+const DB_PATH =
+    process.env.FRIDAY_DB_PATH ??
+    (process.env.NODE_ENV === "production" ? "/data/friday.db" : "./data/friday.db");
 const SCHEMA_PATH = resolve(import.meta.dir, "./schema.sql");
 
 export const db = new Database(DB_PATH, { create: true });

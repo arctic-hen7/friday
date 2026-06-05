@@ -146,6 +146,10 @@ async function openBridge(sessionId: string): Promise<Bridge> {
         }
         if (msg.type === "assistant_proactive") {
             // Stage 1: drop. Eleven push support lands in stage 1.5.
+            const preview = (msg.text ?? "").slice(0, 80).replace(/\s+/g, " ");
+            console.log(
+                `[eleven] DROPPED proactive chunk (turn=${msg.turnId} final=${msg.final} len=${(msg.text ?? "").length})${preview ? ` "${preview}${preview.length >= 80 ? "…" : ""}"` : ""}`,
+            );
             return;
         }
         if (msg.type === "session_info") {
