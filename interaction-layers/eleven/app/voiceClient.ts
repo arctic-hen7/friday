@@ -72,6 +72,8 @@ export class VoiceClient {
     private workletReady: Promise<void> | null = null;
 
     private playbackCtx: AudioContext | null = null;
+    private playbackDest: MediaStreamAudioDestinationNode | null = null;
+    private playbackEl: HTMLAudioElement | null = null;
     private playbackRate = 22050;
     private playbackCursor = 0;
     private activeSources: AudioBufferSourceNode[] = [];
@@ -94,6 +96,12 @@ export class VoiceClient {
     primePlayback(): void {
         this.ensurePlaybackCtx();
         void this.resumePlayback();
+        // Kick the sink <audio> element under the same user gesture so its
+        // autoplay promise resolves now instead of being blocked later.
+        const el = this.playbackEl;
+        if (el && el.paused) {
+            void el.play().catch(() => { /* ignore */ });
+        }
     }
 
     async connect(): Promise<void> {
@@ -186,6 +194,13 @@ export class VoiceClient {
     // unlocked context survives for the next conversation.
     dispose(): void {
         this.disconnect();
+        if (this.playbackEl) {
+            try { this.playbackEl.pause(); } catch { /* ignore */ }
+            this.playbackEl.srcObject = null;
+            this.playbackEl.remove();
+            this.playbackEl = null;
+        }
+        this.playbackDest = null;
         if (this.playbackCtx) {
             void this.playbackCtx.close().catch(() => { /* ignore */ });
             this.playbackCtx = null;
@@ -346,8 +361,30 @@ export class VoiceClient {
     }
 
     private ensurePlaybackCtx(): AudioContext {
-        if (!this.playbackCtx) this.playbackCtx = new AudioContext();
-        return this.playbackCtx;
+        if (this.playbackCtx) return this.playbackCtx;
+        const ctx = new AudioContext();
+        this.playbackCtx = ctx;
+
+        // Route output through a MediaStreamDestination piped into an <audio>
+        // element. While a mic stream is held, Android/iOS put the OS audio
+        // session into "communication" mode and ctx.destination plays through
+        // the earpiece (or whatever the call output is). Sending the WebAudio
+        // graph into a MediaStream that an HTMLAudioElement consumes forces
+        // the output back onto the media stream type, which uses the regular
+        // loudspeaker.
+        const dest = ctx.createMediaStreamDestination();
+        const el = document.createElement("audio");
+        el.autoplay = true;
+        el.playsInline = true;
+        el.srcObject = dest.stream;
+        el.style.display = "none";
+        // Some mobile browsers refuse to start a MediaStream-backed element
+        // unless it's actually in the document.
+        document.body.appendChild(el);
+        this.playbackDest = dest;
+        this.playbackEl = el;
+
+        return ctx;
     }
 
     private async resumePlayback(): Promise<void> {
@@ -378,7 +415,7 @@ export class VoiceClient {
 
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
-        source.connect(ctx.destination);
+        source.connect(this.playbackDest ?? ctx.destination);
         const startAt = Math.max(ctx.currentTime, this.playbackCursor);
         source.start(startAt);
         this.playbackCursor = startAt + audioBuffer.duration;
