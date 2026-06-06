@@ -1,5 +1,5 @@
 model = "gpt-5.5"
-model_instructions_file = "/home/root/.codex/prompt.md"
+model_instructions_file = "/root/.codex/prompt.md"
 service_tier = "fast"
 
 [projects."/workspace"]
