@@ -1,4 +1,6 @@
-personality = "pragmatic"
+model = "gpt-5.5"
+model_instructions_file = "/home/root/.codex/prompt.md"
+service_tier = "fast"
 
 [projects."/workspace"]
 trust_level = "trusted"
